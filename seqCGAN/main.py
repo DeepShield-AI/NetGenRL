@@ -357,7 +357,7 @@ if __name__ == '__main__':
 
     # print(len(wv['time'].wv.key_to_index),len(wv['pkt_len'].wv.key_to_index))
     x_list = [wv_tensor.size(0) for wv_tensor in wv.values()]
-    print(x_list)
+    # print(x_list)
    
 
     # 创建生成器、判别器和cGAN

@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
+from util import *
 
 class Generator(nn.Module):
     def __init__(self, label_dim, seq_dim, max_seq_len, x_list, device):
@@ -264,14 +265,24 @@ class Generator(nn.Module):
         h, c = self.init_hidden(batch_size)
         samples = []
         if flag:
+            first = []
             for i in range(self.max_seq_len): 
                 last = None
                 sam = []
                 hidden_output, h, c = self.get_LSTM_hidden(label, length, x, h, c)
-                for j in range(len(self.x_list)):
-                    # pred, h_new, c_new = self.step(label, length, x, last, j, h, c)
-                    pred = self.step_w_hidden(hidden_output, last, j)
-                    sam.append(pred.multinomial(1))
+                if i == 0:
+                    for j in range(len(self.x_list)):
+                        # pred, h_new, c_new = self.step(label, length, x, last, j, h, c)
+                        pred = self.step_w_hidden(hidden_output, last, j)
+                        sam.append(pred.multinomial(1))
+                        last = torch.cat(sam,dim=1)
+                    first = sam
+                if i != 0:
+                    for j in range(len(self.x_list) - len(META_LIST)):
+                        pred = self.step_w_hidden(hidden_output, last, j)
+                        sam.append(pred.multinomial(1))
+                        last = torch.cat(sam,dim=1)
+                    sam = sam + first[-len(META_LIST):]
                     last = torch.cat(sam,dim=1)
                 x = last
                 # h = h_new
@@ -281,6 +292,7 @@ class Generator(nn.Module):
             # print(x.shape)
             given_len = x.size(1)
             lis = x.chunk(x.size(1), dim=1)
+            first_tensor = lis[0].squeeze(1)
             sam = []
             for i in range(given_len):
                 input = lis[i].squeeze(1)
@@ -293,15 +305,17 @@ class Generator(nn.Module):
                 if i == given_len - 1:
                     pred = self.step_w_hidden(hidden_output, None, 0)
                     sam.append(pred.multinomial(1))
-                    for j in range(1,len(self.x_list)):
+                    for j in range(1,len(self.x_list)- len(META_LIST)):
                         pred = self.step_w_hidden(hidden_output, input[:,:j], j)
                         # pred, h_new, c_new = self.step(label, length, input, input[:,:j], j, h, c)
                         sam.append(pred.multinomial(1))
+                    # sam = sam + first[-len(META_LIST):]
                 samples.append(input)
                 # h = h_new
                 # c = c_new
   
             sam_tensor = torch.cat(sam,dim=1)
+            sam_tensor = torch.cat([sam_tensor, first_tensor[:,-len(META_LIST):]], dim=1)
             # print(sam_tensor.shape)
             
             for i in range(given_len, self.max_seq_len):
@@ -309,11 +323,12 @@ class Generator(nn.Module):
                 sam = []
                 last = None
                 hidden_output, h, c = self.get_LSTM_hidden(label, length, sam_tensor, h, c)
-                for j in range(len(self.x_list)):
+                for j in range(len(self.x_list)- len(META_LIST)):
                     pred = self.step_w_hidden(hidden_output, last, j)
                     #pred, h_new, c_new = self.step(label, length, sam_tensor, last, j, h, c)
                     sam.append(pred.multinomial(1))
                     last = torch.cat(sam,dim=1)
+                last = torch.cat([last, first_tensor[:,-len(META_LIST):]], dim=1)
                 sam_tensor = last
                 # h = h_new
                 # c = c_new
