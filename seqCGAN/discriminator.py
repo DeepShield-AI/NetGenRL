@@ -75,17 +75,17 @@ class Discriminator(nn.Module):
              
         label_int = torch.argmax(label.clone(),1)
         
-        # validity_outputs = torch.stack([self.heads[idx](hidden) for idx in range(len(self.heads))],dim=1)
+        validity_outputs = torch.stack([self.heads[idx](hidden) for idx in range(len(self.heads))],dim=1)
         # # print(validity_outputs.shape)
         
-        # indices = label_int.view(-1, 1, 1).expand(-1, -1, validity_outputs.size(2))
+        indices = label_int.view(-1, 1, 1).expand(-1, -1, validity_outputs.size(2))
         # # print(indices.shape)
 
-        # validity = torch.gather(validity_outputs, dim=1, index=indices).squeeze(1)
+        validity = torch.gather(validity_outputs, dim=1, index=indices).squeeze(1)
         # print(validity.shape)
         
         # 判别真假
-        validity = torch.stack([self.heads[idx](hidden[i]) for i, idx in enumerate(label_int)])
+        # validity = torch.stack([self.heads[idx](hidden[i]) for i, idx in enumerate(label_int)])
         
         # prob = self.softmax(validity)
         # return prob
