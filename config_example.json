@@ -19,7 +19,7 @@
         "pre_trained_generator_epoch": 50,
         "pre_trained_discriminator_epoch": 5,
         "checkpoint": 50, 
-        "expand_times": 0
+        "expand_times": 2
     },
     "attributes":{
         "sery_attribute": {
@@ -29,8 +29,12 @@
             "ttl":{"min_unit":1,"min_value":0,"max_value":255}
         },
         "port_attribute": {
+            "src_port": {"min_unit":1,"min_value":0,"max_value":65535},
+            "dst_port": {"min_unit":1,"min_value":0,"max_value":65535}
         },
         "ip_attribute": {
+            "src_ip": {"min_unit":1,"min_value":0,"max_value":4294967295},
+            "dst_ip": {"min_unit":1,"min_value":0,"max_value":4294967295}
         }
     }
 }

@@ -1,7 +1,9 @@
 import torch
 from seqCGAN.generator import Generator  # 假设你有一个定义好的 Discriminator 类
 import json
-from post_process.check_bestmodel import get_real_data, get_fake_data
+import random
+from post_process.check_bestmodel import get_real_data, SequenceDataset
+from torch.utils.data import DataLoader
 
 def save_data(label, data, meta_attrs, sery_attrs, result_folder_name):
     json_data = []
@@ -22,7 +24,44 @@ def save_data(label, data, meta_attrs, sery_attrs, result_folder_name):
         json.dump(json_data,file)
         
     print(f"Save data to {result_folder_name + label + '.json'}")
-        
+
+def get_gen_data(label_dict, label_dim, real_data, label_str, generator, bins_data, sery_attrs, meta_attrs, batch_size):
+    seq_attrs = sery_attrs + meta_attrs
+    dataset = SequenceDataset(real_data,label_str,label_dict,label_dim)
+    dataloader = DataLoader(dataset, batch_size, shuffle=False)
+    generated_sequences = []
+    with torch.no_grad():
+        for lengths, labels in dataloader:
+            lengths = lengths.to(torch.device("cpu"))  # 确保在同一个设备上
+            labels = labels.to(torch.device("cpu"))
+            # print(lengths.shape)
+            # print(labels.shape)
+            batch_size = lengths.size(0)
+            # 生成随机噪声向量
+            # noise = torch.randn(len(lengths), noise_dim)
+            # 输入生成器生成数据
+            fake_data = generator.sample(batch_size,labels,lengths)
+            # 将生成结果按序列长度截断
+            for i, length in enumerate(lengths):
+                generated_sequences.append(fake_data[i, :length].cpu().tolist())
+       
+    final_seqs = []         
+    for seq in generated_sequences:
+        f_seq = []
+        for i in range(len(seq)):
+            pkt = []
+            for j,attr_id in enumerate(seq[i]): 
+                if j == 0:
+                    attr = round(random.uniform(bins_data[seq_attrs[j]]['intervals'][attr_id][0], bins_data[seq_attrs[j]]['intervals'][attr_id][1]),2)
+                elif j < len(sery_attrs) or i == 0:
+                    attr = round(random.uniform(bins_data[seq_attrs[j]]['intervals'][attr_id][0], bins_data[seq_attrs[j]]['intervals'][attr_id][1]))
+                else:
+                    attr = f_seq[0][j]
+                
+                pkt.append(attr)
+            f_seq.append(pkt)
+        final_seqs.append(f_seq)
+    return final_seqs         
 
 def generate_data(label_dict, dataset, json_folder, bins_folder, wordvec_folder, model_folder, result_folder, meta_attrs, sery_attrs, batch_size, max_seq_len, checkpoint, model_id, expand_times):
     label_dim = len(label_dict)
@@ -58,10 +97,10 @@ def generate_data(label_dict, dataset, json_folder, bins_folder, wordvec_folder,
     fake_datas = {}
     # times = 20
     for label, data in real_datas.items():
-        fake_data = get_fake_data(label_dict,label_dim,data,label,generator,bins_data,sery_attrs,meta_attrs,batch_size)
+        fake_data = get_gen_data(label_dict,label_dim,data,label,generator,bins_data,sery_attrs,meta_attrs,batch_size)
         fake_datas[label] = fake_data
         for _ in range(expand_times - 1):
-            fake_datas[label] += get_fake_data(label_dict,label_dim,data,label,generator,bins_data,sery_attrs,meta_attrs,batch_size)
+            fake_datas[label] += get_gen_data(label_dict,label_dim,data,label,generator,bins_data,sery_attrs,meta_attrs,batch_size)
             
         print("Generate data of", label)
     

@@ -8,6 +8,7 @@ NetGenRL is written under Python 3.12. Following Python package is needed before
 * numpy
 * scipy
 * gensim
+* POT
 
 ## Run
 
@@ -44,7 +45,7 @@ data-pcap
         * model\_folder: folder of trained generation model
         * result\_folder: folder to save generation model
     * model\_paras: hyper-parameters of generation model
-    * attributes: packet attributes of network traffic to generate. If users want to add or change attributes, the code of `pre\_process/pcap\_process.py` should be modified.
+    * attributes: packet attributes of network traffic to generate. If users want to add or change attributes, the code of `pre_process/pcap_process.py` should be modified.
 
 ### Run code
 
