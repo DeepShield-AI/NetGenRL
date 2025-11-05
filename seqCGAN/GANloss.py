@@ -12,7 +12,7 @@ class GANLoss(nn.Module):
         Args:
             prob: (batch_size, seq_len, prob_dim), torch Variable
             target : (batch_size, seq_len, seq_dim), torch Variable
-            reward : (batch_size, seq_len), torch Variable
+            reward : (batch_size * seq_len), torch Variable
         """
         N = target.size(0)
         C = prob.size(2)
@@ -31,6 +31,7 @@ class GANLoss(nn.Module):
             
         loss /= len(self.x_list)
         
-        loss = loss * reward * weights
+        loss = loss * reward 
+        loss = loss * weights
         loss = -torch.mean(loss)
         return loss

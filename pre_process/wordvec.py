@@ -72,7 +72,7 @@ def run_word_vec(dataset,json_folder,bins_folder,wordvec_folder, ip_attrs, port_
     for key, seq in sequences_dic.items():
         model_dic[key] = get_wv_model(seq,series_word_vec_size,5)
     
-    # meta_model = get_meta_model(meta_list,meta_word_vec_size,3)
+    meta_model = get_meta_model(meta_list,meta_word_vec_size,3)
 
     set = {}
     
@@ -106,8 +106,8 @@ def run_word_vec(dataset,json_folder,bins_folder,wordvec_folder, ip_attrs, port_
             if key in model_dic:
                 word_vec_metrics[key].append(model_dic[key].wv[str(i)].tolist())
             else:
-                # word_vec_metrics[key].append(meta_model.wv[str(i)+f'_{count}'].tolist())
-                pass
+                word_vec_metrics[key].append(meta_model.wv[str(i)+f'_{count}'].tolist())
+                # pass
         if key not in model_dic:
             count += 1
             

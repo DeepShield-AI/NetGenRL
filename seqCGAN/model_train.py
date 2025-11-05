@@ -3,11 +3,13 @@ import torch.optim as optim
 import torch.nn.functional as F
 import json
 from torch.utils.data import DataLoader
+from torch import nn
 from seqCGAN.generator import Generator
 from seqCGAN.discriminator import Discriminator
 from seqCGAN.dataset import CustomDataset
 from seqCGAN.rollout import Rollout
 from seqCGAN.GANloss import GANLoss
+from seqCGAN.valueNet import ValueNet
 import time
 
 def get_non_matching_labels_one_hot(labels_indices, num_classes, device):
@@ -223,7 +225,277 @@ def train(generator, discriminator, dataloader, epochs, device, seq_dim, n_roll,
             torch.save(discriminator.state_dict(), f'{model_path}discriminator_{epoch+1}.pth')
             
         torch.cuda.empty_cache()
+        
+def step_pre_train(generator, discriminator, value_net, dataloader, generator_epoch, discirminator_epoch, value_net_epoch, device, model_path):
+    # Pre-train generator
+    gen_optimizer = optim.Adam(generator.parameters(),lr=0.0001, betas=(0.5, 0.999))
+    x_list = generator.x_list
+    
+    for epoch in range(generator_epoch):
+        for i, (seqs, labels, lengths, weights) in enumerate(dataloader):
+            batch_size = seqs.size(0)
+            seq_len = seqs.size(1)
+            seq_dim = seqs.size(2)
+            
+            seqs = seqs.to(device) # (batch_size, seq_len, seq_dim)
+            labels = labels.to(device)
+            weights = weights.unsqueeze(-1).to(device)
+            lengths = lengths.to(device)
+            mask = torch.arange(seq_len).unsqueeze(0).to(device) < lengths.unsqueeze(1)
+            zero = torch.zeros(batch_size, 1, seq_dim).long().to(device)
+            
+            seqs_seed = torch.cat([zero, seqs[:,:-1,:]], dim=1) # (batch_size, seq_len, seq_dim)
+            
+            fake_preds = generator.forward(labels, lengths, seqs_seed, seqs) # (batch_size, seq_len, prob_dim)
+            
+            target = seqs # (batch_size, seq_len, seq_dim)
+            
+            count = 0
+            
+            g_loss = 0.0
+            for j, x_len in enumerate(x_list):
+                loss = F.nll_loss(fake_preds[:,:,count:count+x_len].view(-1,x_len), target[:,:,j].view(-1),reduction='none')
+                loss = loss.view(batch_size, seq_len)  # (batch_size, seq_len)
+                loss = loss * mask * weights
+                g_loss += loss.sum()
+                count += x_len
+                
+            g_loss = g_loss/len(x_list)
+            gen_optimizer.zero_grad()
+            g_loss.backward()
+            gen_optimizer.step()
+            
+        print('Pre-train Epoch [%d] Generator Loss: %f'% (epoch, g_loss))
+        
+        torch.save(generator.state_dict(), f'{model_path}generator_pre.pth')
 
+    # Pre-train discriminator
+    dis_optimizer = optim.RMSprop(discriminator.parameters(), lr=0.0001)
+
+    for epoch in range(discirminator_epoch):
+        for i, (seqs, labels, lengths, weights) in enumerate(dataloader):
+            batch_size = seqs.size(0)
+            seq_len = seqs.size(1)
+            seq_dim = seqs.size(2)
+            
+            seqs = seqs.to(device) # (batch_size, seq_len, seq_dim)
+            labels = labels.to(device)
+            weights = weights.unsqueeze(-1).to(device)
+            
+            fake_seqs = generator.sample(batch_size, labels, lengths) 
+            
+            fake_seqs_wv = discriminator.seq2wv(fake_seqs.detach()).to(device)
+            real_seqs_wv = discriminator.seq2wv(seqs).to(device)
+            fake_validity = discriminator.forward(labels, fake_seqs_wv, lengths) * weights
+            real_validity = discriminator.forward(labels, real_seqs_wv, lengths) * weights
+            
+            dis_optimizer.zero_grad()
+            
+            d_loss = -torch.mean(real_validity) + torch.mean(fake_validity)
+            
+            with torch.backends.cudnn.flags(enabled=False):
+                gp = compute_gradient_penalty(discriminator, real_seqs_wv, fake_seqs_wv,labels, lengths,device)
+            total_d_loss = d_loss + gp
+            total_d_loss.backward()
+            dis_optimizer.step()
+            
+        print('Pre-train Epoch [%d] Discriminator Loss: %f'% (epoch, d_loss))
+        
+        torch.save(discriminator.state_dict(), f'{model_path}discriminator_pre.pth')
+        
+    # Pre-train value net
+    val_optimizer = optim.Adam(generator.parameters(),lr=0.0001, betas=(0.5, 0.999))
+    mse_loss = nn.MSELoss(reduction='none')
+
+    for epoch in range(value_net_epoch):
+        for i, (seqs, labels, lengths, weights) in enumerate(dataloader):
+            batch_size = seqs.size(0)
+            seq_len = seqs.size(1)
+            seq_dim = seqs.size(2)
+            
+            seqs = seqs.to(device) # (batch_size, seq_len, seq_dim)
+            labels = labels.to(device)
+            weights = weights.unsqueeze(-1).to(device)
+            
+            fake_seqs = generator.sample(batch_size, labels, lengths) 
+            
+            fake_seqs_wv = discriminator.seq2wv(fake_seqs.detach()).to(device)
+            d_scores = discriminator.forward(labels, fake_seqs_wv, lengths).detach()
+            
+            v_pred = value_net(labels, fake_seqs_wv, lengths) # (batch_size, seq_len, 1)
+            if v_pred.dim() == 3:
+                v_pred = v_pred.squeeze(-1)  # (batch_size, seq_len)
+                
+            d_target = d_scores.view(batch_size, 1).expand(-1, v_pred.size(1))  # (batch_size, seq_len)
+            # fake_validity = discriminator.forward(labels, fake_seqs_wv, lengths) * weights
+            # real_validity = discriminator.forward(labels, real_seqs_wv, lengths) * weights
+            
+            val_optimizer.zero_grad()
+            
+            max_T = v_pred.size(1) # seq_len
+            lengths = lengths.to(device)
+            mask = (torch.arange(max_T, device=device)[None, :] < lengths[:, None]).float()  # (batch_size, seq_len)
+
+            loss_v_all = mse_loss(v_pred, d_target) * mask * weights # (batch_size, seq_len)
+            v_loss = torch.sum(loss_v_all) / (torch.sum(mask) + 1e-8) # (batch_size, 1)
+            
+            # d_loss = -torch.mean(real_validity) + torch.mean(fake_validity)
+            
+            # with torch.backends.cudnn.flags(enabled=False):
+            #     gp = compute_gradient_penalty(discriminator, real_seqs_wv, fake_seqs_wv,labels, lengths,device)
+            # total_d_loss = d_loss + gp
+            # total_d_loss.backward()
+            v_loss.backward()
+            val_optimizer.step()
+            
+        print('Pre-train Epoch [%d] Value Net Loss: %f'% (epoch, v_loss))
+        
+        torch.save(discriminator.state_dict(), f'{model_path}valuenet_pre.pth')
+
+def step_train(generator, discriminator, value_net, dataloader, epochs, device, seq_dim, n_d_critic, n_v_critic, model_path, checkpoint):
+    optimizer_g = optim.RMSprop(generator.parameters(), lr=0.00005)
+    optimizer_d = optim.RMSprop(discriminator.parameters(), lr=0.00005)
+    optimizer_v = optim.Adam(value_net.parameters(), lr=0.0001)
+
+    # rollout = Rollout(generator, 0.8)
+    gan_loss = GANLoss(generator.x_list)
+    mse_loss = nn.MSELoss(reduction='none')
+
+    for epoch in range(epochs):
+        torch.cuda.empty_cache()
+        for i, (seqs, labels, lengths, weights) in enumerate(dataloader):
+            batch_size = seqs.size(0)
+            seqs = seqs.to(device)
+            labels = labels.to(device)
+            weights = weights.unsqueeze(-1).to(device)
+            
+            # sample_time = 0
+            # reward_time = 0
+            # g_forward_time = 0
+            # l_forward_time = 0
+            # d_forward_time = 0
+            # grad_time = 0
+            # other_time = 0
+            
+            # start_time = time.perf_counter()
+            samples = generator.sample(batch_size, labels, lengths) # (batch_size, seq_len, seq_dim)
+            zeros = torch.zeros((batch_size, 1, seq_dim)).type(torch.LongTensor).to(device)
+            inputs = torch.cat([zeros, samples], dim=1)[:,:-1,:].contiguous()
+            targets = samples.contiguous().view(-1,seq_dim) # (batch_size * seq_len, seq_dim)
+            # sample_time += time.perf_counter() - start_time
+            
+            # start_time = time.perf_counter()
+            # rewards = rollout.get_reward(samples, n_roll, discriminator, labels, lengths)
+            # rewards_exp = rewards.clone().contiguous().view((-1,)).to(device)
+            # reward_time += time.perf_counter() - start_time
+            
+            rewards = value_net.forward(labels, discriminator.seq2wv(samples).to(device), lengths) # (batch_size, seq_len, 1)
+            if rewards.dim() == 3:
+                rewards = rewards.squeeze(-1) # (batch_size, seq_len)
+            
+            
+            
+            # start_time = time.perf_counter()
+            prob = generator.forward(labels, lengths, inputs, samples) # (batch_size, seq_len, prob_dim)
+            
+            max_T = rewards.size(1)
+            length_devs = lengths.to(device)
+            mask = (torch.arange(max_T, device=device)[None, :] < length_devs[:, None]).float() # (batch_size, seq_len)
+            
+            rewards *= mask
+            rewards_exp = rewards.clone().contiguous().view((-1,)).to(device)
+            
+            # baseline = (rewards * mask).sum(dim=0) / (mask.sum(dim=0) + 1e-8)  # (seq_len)
+            # baseline = baseline.unsqueeze(0)  # (1, seq_len)
+            # advantage = (rewards - baseline).detach() # (batch_size, seq_len)
+            # rewards_exp = advantage.clone().contiguous().view((-1,)).to(device)
+            # prob_scatter = prob.clone().view(-1, prob.size(2)) # (batch_size * seq_len, prob_dim)
+            # pg_loss_per_sample = - torch.sum(advantage * prob * mask, dim=1) / (length_devs.float() + 1e-8)  # (batch_size)
+            # g_loss = torch.mean(pg_loss_per_sample)
+            # g_forward_time += time.perf_counter() - start_time
+            
+            # start_time = time.perf_counter()
+            # print(prob.shape, targets.shape, rewards_exp.shape)
+            g_loss = gan_loss.forward(prob, targets, rewards_exp, device, weights)
+            # l_forward_time += time.perf_counter() - start_time
+            
+            # start_time = time.perf_counter()
+            optimizer_g.zero_grad()
+            g_loss.backward()
+            optimizer_g.step()
+            # rollout.update_params()
+            # other_time += time.perf_counter() - start_time
+            
+            for _ in range(n_d_critic):
+                optimizer_d.zero_grad()
+                # start_time = time.perf_counter()
+                fake_seqs = generator.sample(batch_size, labels, lengths)
+                # sample_time += time.perf_counter() - start_time
+                
+                # start_time = time.perf_counter()
+                fake_seqs_wv = discriminator.seq2wv(fake_seqs.detach()).to(device)
+                real_seqs_wv = discriminator.seq2wv(seqs).to(device)
+                fake_validity = discriminator.forward(labels, fake_seqs_wv, lengths) * weights
+                real_validity = discriminator.forward(labels, real_seqs_wv, lengths) * weights
+                # d_forward_time += time.perf_counter() - start_time
+                
+            
+                d_loss_real = -torch.mean(real_validity)
+                d_loss_fake = torch.mean(fake_validity)
+                
+                d_loss = d_loss_real + d_loss_fake
+
+                
+                # start_time = time.perf_counter()
+                with torch.backends.cudnn.flags(enabled=False):
+                    gp = compute_gradient_penalty(discriminator, real_seqs_wv, fake_seqs_wv,labels, lengths,device)
+                # grad_time += time.perf_counter() - start_time
+                
+                # start_time = time.perf_counter()
+                total_d_loss = d_loss + gp
+                total_d_loss.backward()
+                
+                optimizer_d.step()
+                # other_time += time.perf_counter() - start_time
+                
+            for _ in range(n_v_critic):
+                optimizer_v.zero_grad()
+                fake_seqs = generator.sample(batch_size, labels, lengths)
+                fake_seqs_wv = discriminator.seq2wv(fake_seqs.detach()).to(device)
+                # fake_validity = discriminator.forward(labels, fake_seqs_wv, lengths) * weights
+                
+                d_scores = discriminator.forward(labels, fake_seqs_wv, lengths).detach()
+            
+                v_pred = value_net(labels, fake_seqs_wv, lengths) # (batch_size, seq_len, 1)
+                if v_pred.dim() == 3:
+                    v_pred = v_pred.squeeze(-1)  # (batch_size, seq_len)
+                
+                d_target = d_scores.view(batch_size, 1).expand(-1, v_pred.size(1))  # (batch_size, seq_len)
+                
+                max_T = v_pred.size(1) # seq_len
+                length_devs = lengths.to(device)
+                mask = (torch.arange(max_T, device=device)[None, :] < length_devs[:, None]).float()  # (batch_size, seq_len)
+
+                loss_v_all = mse_loss(v_pred, d_target) * mask * weights # (batch_size, seq_len)
+                v_loss = torch.sum(loss_v_all) / (torch.sum(mask) + 1e-8) # (batch_size, 1)
+                
+                v_loss.backward()
+                optimizer_v.step()
+                
+            # print("sample_time: ", sample_time, "reward_time: ", reward_time, "g_forward_time: ", g_forward_time, "l_forward_time: ", l_forward_time, "d_forward_time: ", d_forward_time, "grad_time: ", grad_time, "other_time: ", other_time)
+                
+
+        print(f"Epoch [{epoch+1}/{epochs}], D Loss: {d_loss.item()} ({d_loss_real.item()}, {d_loss_fake.item()}), G Loss: {g_loss.item()}, V loss: {v_loss.item()}.")
+
+        torch.save(generator.state_dict(), f'{model_path}generator.pth')
+        torch.save(discriminator.state_dict(), f'{model_path}discriminator.pth')
+
+        if (epoch + 1) % checkpoint == 0:
+            torch.save(generator.state_dict(), f'{model_path}generator_{epoch+1}.pth')
+            torch.save(discriminator.state_dict(), f'{model_path}discriminator_{epoch+1}.pth')
+            torch.save(discriminator.state_dict(), f'{model_path}valuenet_{epoch+1}.pth')
+            
+        torch.cuda.empty_cache()
 
 # %%
 def model_train(label_dict, dataset, json_folder, bins_folder, wordvec_folder, model_folder,
@@ -263,9 +535,11 @@ def model_train(label_dict, dataset, json_folder, bins_folder, wordvec_folder, m
 
     generator = Generator(label_dim,seq_dim,max_seq_len,x_list,device)
     discriminator = Discriminator(label_dim, series_word_vec_size* len(sery_attrs) + meta_word_vec_size * len(meta_attrs) ,max_seq_len,x_list,wv,device)
+    value_net = ValueNet(label_dim, series_word_vec_size* len(sery_attrs) + meta_word_vec_size * len(meta_attrs), max_seq_len,x_list,device)
     
     generator.to(device)
     discriminator.to(device)
+    value_net.to(device)
 
     print(device)
 
@@ -281,8 +555,16 @@ def model_train(label_dict, dataset, json_folder, bins_folder, wordvec_folder, m
     # checkpoint_d = torch.load(f'{model_path}discriminator.pth') 
     # discriminator.load_state_dict(checkpoint_d) 
     
+    # print("Pre-training...")
+    # pre_train(generator, discriminator, dataloader, pre_trained_generator_epoch, pre_trained_discriminator_epoch, device, model_folder_name)
+
+    # print("Trainning...")
+    # train(generator, discriminator, dataloader, epochs, device, seq_dim, n_roll, n_critic, model_folder_name, checkpoint)
+    
     print("Pre-training...")
-    pre_train(generator, discriminator, dataloader, pre_trained_generator_epoch, pre_trained_discriminator_epoch, device, model_folder_name)
+    pre_trained_valuenet_epoch = 5
+    step_pre_train(generator, discriminator, value_net, dataloader, pre_trained_generator_epoch, pre_trained_discriminator_epoch, pre_trained_valuenet_epoch, device, model_folder_name)
 
     print("Trainning...")
-    train(generator, discriminator, dataloader, epochs, device, seq_dim, n_roll, n_critic, model_folder_name, checkpoint)
+    n_v_critic = 1
+    step_train(generator, discriminator, value_net, dataloader, epochs, device, seq_dim, n_critic, n_v_critic, model_folder_name, checkpoint)

@@ -33,30 +33,31 @@ class Discriminator(nn.Module):
             ) for _ in range(self.label_dim)
         ])
         
+    # label: (B,label_count), seq: (B,max_seq_len,seq_dim), length: (B)
     def forward(self, label, seq, length):
         self.lstm.flatten_parameters()
         
-        length_one_hot = F.one_hot((length.clone().detach().long() - 1), num_classes=self.max_seq_len).float().to(self.device)
-        length_out = self.length_fc(length_one_hot)
+        length_one_hot = F.one_hot((length.clone().detach().long() - 1), num_classes=self.max_seq_len).float().to(self.device) # (B,max_seq_len)
+        length_out = self.length_fc(length_one_hot) # (B,128)
         
-        seq = seq.float()
-        packed_input = nn.utils.rnn.pack_padded_sequence(seq, length, batch_first=True, enforce_sorted=False)
+        seq = seq.float() # (B, max_seq_len, seq_dim)
+        packed_input = nn.utils.rnn.pack_padded_sequence(seq, length, batch_first=True, enforce_sorted=False) 
 
         # Process with LSTM
         packed_output, (h_n, c_n) = self.lstm(packed_input)
         
         # Unpack and get the last hidden state
-        output, _ = nn.utils.rnn.pad_packed_sequence(packed_output, batch_first=True)
+        output, _ = nn.utils.rnn.pad_packed_sequence(packed_output, batch_first=True, total_length=seq.size(1)) # (B, max_seq_len, 512)
 
-        last_hidden_state = output[range(len(output)), (length - 1).to(torch.long), :]  # Get the last valid hidden state
+        last_hidden_state = output[range(len(output)), (length - 1).to(torch.long), :]  # Get the last valid hidden state (B, 512)
 
-        combined = torch.cat([length_out,last_hidden_state], dim=1)
+        combined = torch.cat([length_out,last_hidden_state], dim=1) # (B, 128 + 512)
         
-        hidden = self.fc(combined)
+        hidden = self.fc(combined) # (B, 512)
              
-        label_int = torch.argmax(label.clone(),1)
+        label_int = torch.argmax(label.clone(),1) #(B)
         
-        validity = torch.stack([self.heads[idx](hidden[i]) for i, idx in enumerate(label_int)])
+        validity = torch.stack([self.heads[idx](hidden[i]) for i, idx in enumerate(label_int)]) # (B,1)
         
         return validity
     
