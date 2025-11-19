@@ -123,7 +123,7 @@ def check_models(label_dict, dataset, json_folder, bins_folder, wordvec_folder, 
     best_model_id = 0
     min_ot = math.inf
 
-    for model_id in range(checkpoint * 2,epochs + checkpoint,checkpoint):
+    for model_id in range(checkpoint,epochs + checkpoint,checkpoint):
         # model_name = save_folder + f'generator_{model_id}.pth'
         model_name = save_folder + f'generator_pre.pth'
         

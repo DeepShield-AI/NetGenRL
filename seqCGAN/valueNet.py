@@ -49,17 +49,16 @@ class ValueNet(nn.Module):
         packed_output, (h_n, c_n) = self.lstm(packed_input)
         # Unpack and get the last hidden state
         output, _ = nn.utils.rnn.pad_packed_sequence(packed_output, batch_first=True, total_length=seq.size(1)) # (B, max_seq_len, 512)
+        
+        prefix_hidden = torch.zeros_like(output)
+        prefix_hidden[:, 1:, :] = output[:, :-1, :]
 
         len_expand = length_out.unsqueeze(1).expand(-1, output.size(1), -1) # (B,max_seq_len,128)
-        combined = torch.cat([output, len_expand], dim=2)  # (B, max_seq_len, 512 + 128)
+        # combined = torch.cat([output, len_expand], dim=2)  # (B, max_seq_len, 512 + 128)
+        combined = torch.cat([prefix_hidden, len_expand], dim=2)  # (B, max_seq_len, 512 + 128)
         
         hidden = self.fc(combined)  # (B, max_seq_len, 512)
         label_int = torch.argmax(label.clone(), 1) # (B)
-        
-        # 针对每个样本选用不同的head
-        # step_values = torch.zeros(seq.size(0), seq.size(1), 1).to(self.device) #(B,max_seq_len,1)
-        # for i, idx in enumerate(label_int):
-        #     step_values[i] = self.heads[idx](hidden[i]) 
             
         step_values = torch.stack([self.heads[idx](hidden[i]) for i, idx in enumerate(label_int)],dim=0) # (B,max_seq,1)
 

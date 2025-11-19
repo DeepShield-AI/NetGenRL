@@ -35,9 +35,13 @@ def compute_gradient_penalty(discriminator, real_seqs, fake_seqs, labels, length
     interpolated_seqs = alpha * real_seqs + (1 - alpha) * fake_seqs
     interpolated_seqs.requires_grad_(True)
     interpolated_scores = discriminator.forward(labels,interpolated_seqs,lengths) 
+    interpolated_scores_mean = discriminator.cal_value(lengths,interpolated_scores) 
 
-    gradients = torch.autograd.grad(outputs=interpolated_scores, inputs=interpolated_seqs,
-                                   grad_outputs=torch.ones_like(interpolated_scores),
+    # gradients = torch.autograd.grad(outputs=interpolated_scores, inputs=interpolated_seqs,
+    #                                grad_outputs=torch.ones_like(interpolated_scores),
+    #                                create_graph=True, retain_graph=True, only_inputs=True)[0]
+    gradients = torch.autograd.grad(outputs=interpolated_scores_mean, inputs=interpolated_seqs,
+                                   grad_outputs=torch.ones_like(interpolated_scores_mean),
                                    create_graph=True, retain_graph=True, only_inputs=True)[0]
 
     gradients = gradients.view(batch_size, -1)
@@ -286,12 +290,19 @@ def step_pre_train(generator, discriminator, value_net, dataloader, generator_ep
             
             fake_seqs_wv = discriminator.seq2wv(fake_seqs.detach()).to(device)
             real_seqs_wv = discriminator.seq2wv(seqs).to(device)
-            fake_validity = discriminator.forward(labels, fake_seqs_wv, lengths) * weights
-            real_validity = discriminator.forward(labels, real_seqs_wv, lengths) * weights
+            # fake_validity = discriminator.forward(labels, fake_seqs_wv, lengths) * weights
+            # real_validity = discriminator.forward(labels, real_seqs_wv, lengths) * weights
+            
+            fake_validity = discriminator.forward(labels, fake_seqs_wv, lengths)
+            real_validity = discriminator.forward(labels, real_seqs_wv, lengths)
+            
+            fake_validity_mean = discriminator.cal_value(lengths,fake_validity) * weights
+            real_validity_mean = discriminator.cal_value(lengths,real_validity) * weights
             
             dis_optimizer.zero_grad()
             
-            d_loss = -torch.mean(real_validity) + torch.mean(fake_validity)
+            # d_loss = -torch.mean(real_validity) + torch.mean(fake_validity)
+            d_loss = -torch.mean(real_validity_mean) + torch.mean(fake_validity_mean)
             
             with torch.backends.cudnn.flags(enabled=False):
                 gp = compute_gradient_penalty(discriminator, real_seqs_wv, fake_seqs_wv,labels, lengths,device)
@@ -306,6 +317,7 @@ def step_pre_train(generator, discriminator, value_net, dataloader, generator_ep
     # Pre-train value net
     val_optimizer = optim.Adam(generator.parameters(),lr=0.0001, betas=(0.5, 0.999))
     mse_loss = nn.MSELoss(reduction='none')
+    # mse_loss = nn.SmoothL1Loss(reduction='none')
 
     for epoch in range(value_net_epoch):
         for i, (seqs, labels, lengths, weights) in enumerate(dataloader):
@@ -315,7 +327,8 @@ def step_pre_train(generator, discriminator, value_net, dataloader, generator_ep
             
             seqs = seqs.to(device) # (batch_size, seq_len, seq_dim)
             labels = labels.to(device)
-            weights = weights.unsqueeze(-1).to(device)
+            # weights = weights.unsqueeze(-1).to(device)
+            weights = weights.to(device)
             
             fake_seqs = generator.sample(batch_size, labels, lengths) 
             
@@ -325,8 +338,9 @@ def step_pre_train(generator, discriminator, value_net, dataloader, generator_ep
             v_pred = value_net(labels, fake_seqs_wv, lengths) # (batch_size, seq_len, 1)
             if v_pred.dim() == 3:
                 v_pred = v_pred.squeeze(-1)  # (batch_size, seq_len)
+                d_scores = d_scores.squeeze(-1)
                 
-            d_target = d_scores.view(batch_size, 1).expand(-1, v_pred.size(1))  # (batch_size, seq_len)
+            # d_target = d_scores.view(batch_size, 1).expand(-1, v_pred.size(1))  # (batch_size, seq_len)
             # fake_validity = discriminator.forward(labels, fake_seqs_wv, lengths) * weights
             # real_validity = discriminator.forward(labels, real_seqs_wv, lengths) * weights
             
@@ -336,8 +350,19 @@ def step_pre_train(generator, discriminator, value_net, dataloader, generator_ep
             lengths = lengths.to(device)
             mask = (torch.arange(max_T, device=device)[None, :] < lengths[:, None]).float()  # (batch_size, seq_len)
 
-            loss_v_all = mse_loss(v_pred, d_target) * mask * weights # (batch_size, seq_len)
-            v_loss = torch.sum(loss_v_all) / (torch.sum(mask) + 1e-8) # (batch_size, 1)
+            # loss_v_all = mse_loss(v_pred, d_target) * mask * weights # (batch_size, seq_len)
+            # v_loss = torch.sum(loss_v_all) / (torch.sum(mask) + 1e-8) # (batch_size, 1)
+            # loss_all = mse_loss(v_pred, d_target)   # (B, T)
+            # seq_loss_sum = (loss_all * mask).sum(dim=1)        # (B,)
+            # seq_loss = seq_loss_sum / (mask.sum(dim=1) + 1e-8)        # (B,)                          # (B,)
+            # v_target = (v_pred * mask).sum(dim = 1)
+            # d_target = d_scores * lengths
+            # seq_loss = mse_loss(v_target, d_target)
+            # seq_loss = mse_loss(v_target , d_scores)
+            v_target = v_pred * mask
+            d_target = d_scores * mask
+            seq_loss = ((v_target - d_target) ** 2).sum(dim = 1)/lengths
+            v_loss = (seq_loss * weights).mean()
             
             # d_loss = -torch.mean(real_validity) + torch.mean(fake_validity)
             
@@ -350,7 +375,7 @@ def step_pre_train(generator, discriminator, value_net, dataloader, generator_ep
             
         print('Pre-train Epoch [%d] Value Net Loss: %f'% (epoch, v_loss))
         
-        torch.save(discriminator.state_dict(), f'{model_path}valuenet_pre.pth')
+        torch.save(value_net.state_dict(), f'{model_path}valuenet_pre.pth')
 
 def step_train(generator, discriminator, value_net, dataloader, epochs, device, seq_dim, n_d_critic, n_v_critic, model_path, checkpoint):
     optimizer_g = optim.RMSprop(generator.parameters(), lr=0.00005)
@@ -360,6 +385,7 @@ def step_train(generator, discriminator, value_net, dataloader, epochs, device, 
     # rollout = Rollout(generator, 0.8)
     gan_loss = GANLoss(generator.x_list)
     mse_loss = nn.MSELoss(reduction='none')
+    # mse_loss = nn.SmoothL1Loss(reduction='none')
 
     for epoch in range(epochs):
         torch.cuda.empty_cache()
@@ -369,34 +395,25 @@ def step_train(generator, discriminator, value_net, dataloader, epochs, device, 
             labels = labels.to(device)
             weights = weights.unsqueeze(-1).to(device)
             
-            # sample_time = 0
-            # reward_time = 0
-            # g_forward_time = 0
-            # l_forward_time = 0
-            # d_forward_time = 0
-            # grad_time = 0
-            # other_time = 0
-            
-            # start_time = time.perf_counter()
             samples = generator.sample(batch_size, labels, lengths) # (batch_size, seq_len, seq_dim)
             zeros = torch.zeros((batch_size, 1, seq_dim)).type(torch.LongTensor).to(device)
             inputs = torch.cat([zeros, samples], dim=1)[:,:-1,:].contiguous()
             targets = samples.contiguous().view(-1,seq_dim) # (batch_size * seq_len, seq_dim)
-            # sample_time += time.perf_counter() - start_time
             
-            # start_time = time.perf_counter()
-            # rewards = rollout.get_reward(samples, n_roll, discriminator, labels, lengths)
-            # rewards_exp = rewards.clone().contiguous().view((-1,)).to(device)
-            # reward_time += time.perf_counter() - start_time
+            # rewards = value_net.forward(labels, discriminator.seq2wv(samples).to(device), lengths) # (batch_size, seq_len, 1)
+            rewards = discriminator.forward(labels, discriminator.seq2wv(samples).to(device), lengths) # (batch_size, seq_len, 1)
+            baseline = value_net.forward(labels, discriminator.seq2wv(samples).to(device), lengths)
             
-            rewards = value_net.forward(labels, discriminator.seq2wv(samples).to(device), lengths) # (batch_size, seq_len, 1)
+            rewards = rewards - baseline
+            
             if rewards.dim() == 3:
                 rewards = rewards.squeeze(-1) # (batch_size, seq_len)
+                
+            # print(rewards)
             
-            
-            
-            # start_time = time.perf_counter()
             prob = generator.forward(labels, lengths, inputs, samples) # (batch_size, seq_len, prob_dim)
+            
+            # print(prob)
             
             max_T = rewards.size(1)
             length_devs = lengths.to(device)
@@ -405,43 +422,38 @@ def step_train(generator, discriminator, value_net, dataloader, epochs, device, 
             rewards *= mask
             rewards_exp = rewards.clone().contiguous().view((-1,)).to(device)
             
-            # baseline = (rewards * mask).sum(dim=0) / (mask.sum(dim=0) + 1e-8)  # (seq_len)
-            # baseline = baseline.unsqueeze(0)  # (1, seq_len)
-            # advantage = (rewards - baseline).detach() # (batch_size, seq_len)
-            # rewards_exp = advantage.clone().contiguous().view((-1,)).to(device)
-            # prob_scatter = prob.clone().view(-1, prob.size(2)) # (batch_size * seq_len, prob_dim)
-            # pg_loss_per_sample = - torch.sum(advantage * prob * mask, dim=1) / (length_devs.float() + 1e-8)  # (batch_size)
-            # g_loss = torch.mean(pg_loss_per_sample)
-            # g_forward_time += time.perf_counter() - start_time
-            
-            # start_time = time.perf_counter()
-            # print(prob.shape, targets.shape, rewards_exp.shape)
             g_loss = gan_loss.forward(prob, targets, rewards_exp, device, weights)
-            # l_forward_time += time.perf_counter() - start_time
-            
-            # start_time = time.perf_counter()
             optimizer_g.zero_grad()
             g_loss.backward()
             optimizer_g.step()
-            # rollout.update_params()
-            # other_time += time.perf_counter() - start_time
             
             for _ in range(n_d_critic):
                 optimizer_d.zero_grad()
-                # start_time = time.perf_counter()
                 fake_seqs = generator.sample(batch_size, labels, lengths)
-                # sample_time += time.perf_counter() - start_time
-                
-                # start_time = time.perf_counter()
+
                 fake_seqs_wv = discriminator.seq2wv(fake_seqs.detach()).to(device)
                 real_seqs_wv = discriminator.seq2wv(seqs).to(device)
-                fake_validity = discriminator.forward(labels, fake_seqs_wv, lengths) * weights
-                real_validity = discriminator.forward(labels, real_seqs_wv, lengths) * weights
-                # d_forward_time += time.perf_counter() - start_time
+                # fake_validity = discriminator.forward(labels, fake_seqs_wv, lengths) * weights
+                # real_validity = discriminator.forward(labels, real_seqs_wv, lengths) * weights
+                fake_validity = discriminator.forward(labels, fake_seqs_wv, lengths)
+                real_validity = discriminator.forward(labels, real_seqs_wv, lengths)
                 
+                
+                
+                # max_T = v_pred.size(1) # seq_len
+                # length_devs = lengths.to(device)
+                # mask = (torch.arange(max_T, device=device)[None, :] < length_devs[:, None]).float()  # (batch_size, seq_len)
+                
+                # fake_validity_target = fake_validity * mask
+                # real_validity_target = real_validity * mask
+                
+                fake_validity_mean = discriminator.cal_value(lengths,fake_validity) * weights
+                real_validity_mean = discriminator.cal_value(lengths,real_validity) * weights
             
-                d_loss_real = -torch.mean(real_validity)
-                d_loss_fake = torch.mean(fake_validity)
+                # d_loss_real = -torch.mean(real_validity)
+                # d_loss_fake = torch.mean(fake_validity)
+                d_loss_real = -torch.mean(fake_validity_mean)
+                d_loss_fake = torch.mean(real_validity_mean)
                 
                 d_loss = d_loss_real + d_loss_fake
 
@@ -465,19 +477,29 @@ def step_train(generator, discriminator, value_net, dataloader, epochs, device, 
                 # fake_validity = discriminator.forward(labels, fake_seqs_wv, lengths) * weights
                 
                 d_scores = discriminator.forward(labels, fake_seqs_wv, lengths).detach()
+                # d_scores = d_scores.view(-1)
             
                 v_pred = value_net(labels, fake_seqs_wv, lengths) # (batch_size, seq_len, 1)
                 if v_pred.dim() == 3:
                     v_pred = v_pred.squeeze(-1)  # (batch_size, seq_len)
+                    d_scores = d_scores.squeeze(-1)
                 
-                d_target = d_scores.view(batch_size, 1).expand(-1, v_pred.size(1))  # (batch_size, seq_len)
+                # d_target = d_scores.view(batch_size, 1).expand(-1, v_pred.size(1))  # (batch_size, seq_len)
                 
                 max_T = v_pred.size(1) # seq_len
                 length_devs = lengths.to(device)
                 mask = (torch.arange(max_T, device=device)[None, :] < length_devs[:, None]).float()  # (batch_size, seq_len)
 
-                loss_v_all = mse_loss(v_pred, d_target) * mask * weights # (batch_size, seq_len)
-                v_loss = torch.sum(loss_v_all) / (torch.sum(mask) + 1e-8) # (batch_size, 1)
+                # loss_v_all = mse_loss(v_pred, d_target) * mask * weights # (batch_size, seq_len)
+                # v_loss = torch.sum(loss_v_all) / (torch.sum(mask) + 1e-8) # (batch_size, 1)
+                v_target = v_pred * mask
+                d_target = d_scores * mask
+                seq_loss = ((v_target - d_target) ** 2).sum(dim = 1)/length_devs
+                # seq_loss = mse_loss(v_target, d_target)
+                # loss_all = mse_loss(v_pred, d_target)   # (B, T)
+                # seq_loss_sum = (loss_all * mask).sum(dim=1)        # (B,)
+                # seq_loss = seq_loss_sum / (mask.sum(dim=1) + 1e-8)        # (B,)                          # (B,)
+                v_loss = (seq_loss * weights).mean()
                 
                 v_loss.backward()
                 optimizer_v.step()
@@ -489,11 +511,12 @@ def step_train(generator, discriminator, value_net, dataloader, epochs, device, 
 
         torch.save(generator.state_dict(), f'{model_path}generator.pth')
         torch.save(discriminator.state_dict(), f'{model_path}discriminator.pth')
+        torch.save(value_net.state_dict(), f'{model_path}valuenet.pth')
 
         if (epoch + 1) % checkpoint == 0:
             torch.save(generator.state_dict(), f'{model_path}generator_{epoch+1}.pth')
             torch.save(discriminator.state_dict(), f'{model_path}discriminator_{epoch+1}.pth')
-            torch.save(discriminator.state_dict(), f'{model_path}valuenet_{epoch+1}.pth')
+            torch.save(value_net.state_dict(), f'{model_path}valuenet_{epoch+1}.pth')
             
         torch.cuda.empty_cache()
 
@@ -549,11 +572,14 @@ def model_train(label_dict, dataset, json_folder, bins_folder, wordvec_folder, m
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
 
-    # checkpoint_g = torch.load(f'{model_path}generator.pth')  
+    # checkpoint_g = torch.load(f'{model_folder_name}generator_tmp.pth')  
     # generator.load_state_dict(checkpoint_g) 
 
-    # checkpoint_d = torch.load(f'{model_path}discriminator.pth') 
+    # checkpoint_d = torch.load(f'{model_folder_name}discriminator_tmp.pth') 
     # discriminator.load_state_dict(checkpoint_d) 
+    
+    # checkpoint_v = torch.load(f'{model_folder_name}valuenet_tmp.pth') 
+    # value_net.load_state_dict(checkpoint_v) 
     
     # print("Pre-training...")
     # pre_train(generator, discriminator, dataloader, pre_trained_generator_epoch, pre_trained_discriminator_epoch, device, model_folder_name)
@@ -562,7 +588,7 @@ def model_train(label_dict, dataset, json_folder, bins_folder, wordvec_folder, m
     # train(generator, discriminator, dataloader, epochs, device, seq_dim, n_roll, n_critic, model_folder_name, checkpoint)
     
     print("Pre-training...")
-    pre_trained_valuenet_epoch = 5
+    pre_trained_valuenet_epoch = 1
     step_pre_train(generator, discriminator, value_net, dataloader, pre_trained_generator_epoch, pre_trained_discriminator_epoch, pre_trained_valuenet_epoch, device, model_folder_name)
 
     print("Trainning...")

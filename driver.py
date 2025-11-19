@@ -41,11 +41,11 @@ def driver():
     check_and_make_forder(config['path']['result_folder'])
     check_and_make_forder(f"./{config['path']['result_folder']}/{config['path']['dataset']}")
     
-    # print("Processing pcap to json ...")
+    print("Processing pcap to json ...")
     
-    # pcap_process.process_pcap(f"./{config['path']['pcap_folder']}/{config['path']['dataset']}",
-    #                           label_dict,
-    #                           f"./{config['path']['json_folder']}/{config['path']['dataset']}")
+    pcap_process.process_pcap(f"./{config['path']['pcap_folder']}/{config['path']['dataset']}",
+                              label_dict,
+                              f"./{config['path']['json_folder']}/{config['path']['dataset']}")
     
     print("Binning data ...")
     
