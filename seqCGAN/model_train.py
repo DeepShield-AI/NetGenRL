@@ -242,7 +242,7 @@ def train(generator, discriminator, dataloader, epochs, device, seq_dim, n_roll,
             
         torch.cuda.empty_cache()
         
-def step_pre_train(generator, discriminator, value_net, dataloader, generator_epoch, discirminator_epoch, value_net_epoch, device, model_path):
+def step_pre_train(generator, discriminator, dataloader, generator_epoch, discirminator_epoch, value_net_epoch, device, model_path):
     # Pre-train generator
     gen_optimizer = optim.Adam(generator.parameters(),lr=0.0001, betas=(0.5, 0.999))
     x_list = generator.x_list
@@ -389,14 +389,14 @@ def step_pre_train(generator, discriminator, value_net, dataloader, generator_ep
         
     #     torch.save(value_net.state_dict(), f'{model_path}valuenet_pre.pth')
 
-def step_train(generator, discriminator, value_net, dataloader, epochs, device, seq_dim, n_d_critic, n_v_critic, model_path, checkpoint, real_data, bins_data, meta_attrs, sery_attrs, label_dict, n_roll):
+def step_train(generator, discriminator, dataloader, epochs, device, seq_dim, n_d_critic, n_v_critic, model_path, checkpoint, real_data, bins_data, meta_attrs, sery_attrs, label_dict, n_roll):
     optimizer_g = optim.RMSprop(generator.parameters(), lr=0.00005)
     optimizer_d = optim.RMSprop(discriminator.parameters(), lr=0.00005)
-    optimizer_v = optim.Adam(value_net.parameters(), lr=0.0001)
+    # optimizer_v = optim.Adam(value_net.parameters(), lr=0.0001)
 
-    rollout = Rollout(generator, 0.8)
+    # rollout = Rollout(generator, 0.8)
     gan_loss = GANLoss(generator.x_list)
-    mse_loss = nn.MSELoss(reduction='none')
+    # mse_loss = nn.MSELoss(reduction='none')
     # mse_loss = nn.SmoothL1Loss(reduction='none')
 
     for epoch in range(epochs):
@@ -601,11 +601,11 @@ def model_train(label_dict, dataset, json_folder, bins_folder, wordvec_folder, m
 
     generator = Generator(label_dim,seq_dim,max_seq_len,x_list,device)
     discriminator = Discriminator(label_dim, series_word_vec_size* len(sery_attrs) + meta_word_vec_size * len(meta_attrs) ,max_seq_len,x_list,wv,device)
-    value_net = ValueNet(label_dim, series_word_vec_size* len(sery_attrs) + meta_word_vec_size * len(meta_attrs), max_seq_len,x_list,device)
+    # value_net = ValueNet(label_dim, series_word_vec_size* len(sery_attrs) + meta_word_vec_size * len(meta_attrs), max_seq_len,x_list,device)
     
     generator.to(device)
     discriminator.to(device)
-    value_net.to(device)
+    # value_net.to(device)
 
     print(device)
 
@@ -634,11 +634,13 @@ def model_train(label_dict, dataset, json_folder, bins_folder, wordvec_folder, m
     
     print("Pre-training...")
     pre_trained_valuenet_epoch = 1
-    step_pre_train(generator, discriminator, value_net, dataloader, pre_trained_generator_epoch, pre_trained_discriminator_epoch, pre_trained_valuenet_epoch, device, model_folder_name)
+    # step_pre_train(generator, discriminator, value_net, dataloader, pre_trained_generator_epoch, pre_trained_discriminator_epoch, pre_trained_valuenet_epoch, device, model_folder_name)
+    step_pre_train(generator, discriminator, dataloader, pre_trained_generator_epoch, pre_trained_discriminator_epoch, pre_trained_valuenet_epoch, device, model_folder_name)
 
     print("Trainning...")
     n_v_critic = 1
     bins_data = dataset.bins_data
     real_data = get_real_data(data_folder, label_dict, meta_attrs, sery_attrs, bins_data, max_seq_len)
     
-    step_train(generator, discriminator, value_net, dataloader, epochs, device, seq_dim, n_critic, n_v_critic, model_folder_name, checkpoint, real_data, bins_data, meta_attrs, sery_attrs, label_dict, n_roll)
+    # step_train(generator, discriminator, value_net, dataloader, epochs, device, seq_dim, n_critic, n_v_critic, model_folder_name, checkpoint, real_data, bins_data, meta_attrs, sery_attrs, label_dict, n_roll)
+    step_train(generator, discriminator, dataloader, epochs, device, seq_dim, n_critic, n_v_critic, model_folder_name, checkpoint, real_data, bins_data, meta_attrs, sery_attrs, label_dict, n_roll)

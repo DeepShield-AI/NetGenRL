@@ -1,6 +1,6 @@
 {
     "path":{
-        "dataset": "iscx_small",
+        "dataset": "iscx",
         "pcap_folder": "data-pcap",
         "json_folder": "data-json",
         "bins_folder": "bins",
