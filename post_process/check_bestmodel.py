@@ -124,8 +124,8 @@ def check_models(label_dict, dataset, json_folder, bins_folder, wordvec_folder, 
     min_ot = math.inf
 
     for model_id in range(checkpoint,epochs + checkpoint,checkpoint):
-        # model_name = save_folder + f'generator_{model_id}.pth'
-        model_name = save_folder + f'generator_pre.pth'
+        model_name = save_folder + f'generator_{model_id}.pth'
+        # model_name = save_folder + f'generator_pre.pth'
         
         generator = Generator(label_dim,seq_dim,max_seq_len,x_list,'cpu')
         checkpoint = torch.load(model_name, map_location=torch.device('cpu'))  # 加载保存的权重字典

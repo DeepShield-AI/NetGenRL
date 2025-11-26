@@ -49,7 +49,7 @@ class Discriminator(nn.Module):
         output, _ = nn.utils.rnn.pad_packed_sequence(packed_output, batch_first=True, total_length=seq.size(1)) # (B, max_seq_len, 512)
 
         len_expand = length_out.unsqueeze(1).expand(-1, output.size(1), -1) # (B,max_seq_len,128)
-        combined = torch.cat([output, len_expand], dim=2)  # (B, max_seq_len, 512 + 128)
+        combined = torch.cat([len_expand, output], dim=2)  # (B, max_seq_len, 512 + 128)
         
         hidden = self.fc(combined)  # (B, max_seq_len, 512)
         label_int = torch.argmax(label.clone(), 1) # (B)

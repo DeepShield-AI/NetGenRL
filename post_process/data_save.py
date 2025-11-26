@@ -86,8 +86,8 @@ def generate_data(label_dict, dataset, json_folder, bins_folder, wordvec_folder,
 
     real_datas = get_real_data(data_folder,label_dict,meta_attrs,sery_attrs,bins_data,max_seq_len)
     
-    # model_name = save_folder + f'generator_{model_id}.pth'
-    model_name = save_folder + f'generator_pre.pth'
+    model_name = save_folder + f'generator_{model_id}.pth'
+    # model_name = save_folder + f'generator.pth'
         
     generator = Generator(label_dim,seq_dim,max_seq_len,x_list,'cpu')
     checkpoint = torch.load(model_name, map_location=torch.device('cpu'))  # 加载保存的权重字典
@@ -99,7 +99,7 @@ def generate_data(label_dict, dataset, json_folder, bins_folder, wordvec_folder,
     for label, data in real_datas.items():
         fake_data = get_gen_data(label_dict,label_dim,data,label,generator,bins_data,sery_attrs,meta_attrs,batch_size)
         fake_datas[label] = fake_data
-        for _ in range(expand_times - 1):
+        for _ in range(expand_times):
             fake_datas[label] += get_gen_data(label_dict,label_dim,data,label,generator,bins_data,sery_attrs,meta_attrs,batch_size)
             
         print("Generate data of", label)
