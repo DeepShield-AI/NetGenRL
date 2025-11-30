@@ -41,35 +41,35 @@ def driver():
     check_and_make_forder(config['path']['result_folder'])
     check_and_make_forder(f"./{config['path']['result_folder']}/{config['path']['dataset']}")
     
-    print("Processing pcap to json ...")
+    # print("Processing pcap to json ...")
     
-    pcap_process.process_pcap(f"./{config['path']['pcap_folder']}/{config['path']['dataset']}",
-                              label_dict,
-                              f"./{config['path']['json_folder']}/{config['path']['dataset']}")
+    # pcap_process.process_pcap(f"./{config['path']['pcap_folder']}/{config['path']['dataset']}",
+    #                           label_dict,
+    #                           f"./{config['path']['json_folder']}/{config['path']['dataset']}")
     
-    print("Binning data ...")
+    # print("Binning data ...")
     
-    ChiMerge.chimerge(config['path']['dataset'],
-                      config['path']['json_folder'],
-                      config['path']['bins_folder'],
-                      ip_attr_names,
-                      port_attr_names,
-                      sery_attr_names,
-                      config['model_paras']['max_seq_len'],
-                      param_dicts)
+    # ChiMerge.chimerge(config['path']['dataset'],
+    #                   config['path']['json_folder'],
+    #                   config['path']['bins_folder'],
+    #                   ip_attr_names,
+    #                   port_attr_names,
+    #                   sery_attr_names,
+    #                   config['model_paras']['max_seq_len'],
+    #                   param_dicts)
     
-    print("Pre-training wordvec model ...")
+    # print("Pre-training wordvec model ...")
     
-    wordvec.run_word_vec(config['path']['dataset'],
-                         config['path']['json_folder'],
-                         config['path']['bins_folder'],
-                         config['path']['wordvec_folder'],
-                         ip_attr_names,
-                         port_attr_names,
-                         sery_attr_names,
-                         config['model_paras']['max_seq_len'],
-                         config['model_paras']['series_word_vec_size'],
-                         config['model_paras']['meta_word_vec_size'])
+    # wordvec.run_word_vec(config['path']['dataset'],
+    #                      config['path']['json_folder'],
+    #                      config['path']['bins_folder'],
+    #                      config['path']['wordvec_folder'],
+    #                      ip_attr_names,
+    #                      port_attr_names,
+    #                      sery_attr_names,
+    #                      config['model_paras']['max_seq_len'],
+    #                      config['model_paras']['series_word_vec_size'],
+    #                      config['model_paras']['meta_word_vec_size'])
     
     print("Training model ...")
     model_train.model_train(label_dict, 
