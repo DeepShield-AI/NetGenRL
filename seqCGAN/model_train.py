@@ -4,7 +4,7 @@ import torch.nn.functional as F
 import json
 from torch.utils.data import DataLoader
 from torch import nn
-from seqCGAN.generator import Generator
+from seqCGAN.transformer import TransGenerator
 from seqCGAN.discriminator import Discriminator
 from seqCGAN.dataset import CustomDataset
 from seqCGAN.rollout import Rollout
@@ -572,6 +572,60 @@ def step_train(generator, discriminator,value_net, dataloader, epochs, device, s
         
         torch.cuda.empty_cache()
 
+def lstm_train(generator,  dataloader, epochs, device, model_path, checkpoint, real_data, bins_data, meta_attrs, sery_attrs, label_dict):
+    # Pre-train generator
+    gen_optimizer = optim.Adam(generator.parameters(),lr=0.0001, betas=(0.5, 0.999))
+    x_list = generator.x_list
+    
+    for epoch in range(epochs):
+        start = time.perf_counter()
+        for i, (seqs, labels, lengths, weights) in enumerate(dataloader):
+            batch_size = seqs.size(0)
+            seq_len = seqs.size(1)
+            seq_dim = seqs.size(2)
+            
+            seqs = seqs.to(device) # (batch_size, seq_len, seq_dim)
+            labels = labels.to(device)
+            weights = weights.unsqueeze(-1).to(device)
+            lengths = lengths.to(device)
+            mask = torch.arange(seq_len).unsqueeze(0).to(device) < lengths.unsqueeze(1)
+            zero = torch.zeros(batch_size, 1, seq_dim).long().to(device)
+            
+            seqs_seed = torch.cat([zero, seqs[:,:-1,:]], dim=1) # (batch_size, seq_len, seq_dim)
+            
+            fake_preds = generator.forward(labels, lengths, seqs_seed, seqs) # (batch_size, seq_len, prob_dim)
+            
+            target = seqs # (batch_size, seq_len, seq_dim)
+            
+            count = 0
+            
+            g_loss = 0.0
+            for j, x_len in enumerate(x_list):
+                loss = F.nll_loss(fake_preds[:,:,count:count+x_len].view(-1,x_len), target[:,:,j].view(-1),reduction='none')
+                loss = loss.view(batch_size, seq_len)  # (batch_size, seq_len)
+                loss = loss * mask * weights
+                g_loss += loss.sum()
+                count += x_len
+                
+            g_loss = g_loss/len(x_list)
+            gen_optimizer.zero_grad()
+            g_loss.backward()
+            gen_optimizer.step()
+            
+        # fake_data = get_fake_json(label_dict, len(label_dict), real_data, generator, bins_data, sery_attrs, meta_attrs, batch_size)
+        # eu_sum = cal_euler(real_data, fake_data, label_dict)
+        # hm_sum = cal_hamming(real_data, fake_data, label_dict)
+            
+        end = time.perf_counter()
+            
+        # print(f"Epoch [{epoch+1}/{epochs}], Loss: {g_loss.item()}, time cost: {end - start}, Euler distance: {eu_sum}, Hamming distance: {hm_sum}.")
+        print(f"Epoch [{epoch+1}/{epochs}], Loss: {g_loss.item()}, time cost: {end - start}.")
+
+        torch.save(generator.state_dict(), f'{model_path}generator.pth')
+        
+        if (epoch + 1) % checkpoint == 0:
+            torch.save(generator.state_dict(), f'{model_path}generator_{epoch+1}.pth')
+
 # %%
 def model_train(label_dict, dataset, json_folder, bins_folder, wordvec_folder, model_folder,
                 meta_attrs, sery_attrs, 
@@ -608,13 +662,13 @@ def model_train(label_dict, dataset, json_folder, bins_folder, wordvec_folder, m
     print(x_list)
    
 
-    generator = Generator(label_dim,seq_dim,max_seq_len,x_list,device)
-    discriminator = Discriminator(label_dim, series_word_vec_size* len(sery_attrs) + meta_word_vec_size * len(meta_attrs) ,max_seq_len,x_list,wv,device)
-    value_net = ValueNet(label_dim, series_word_vec_size* len(sery_attrs) + meta_word_vec_size * len(meta_attrs), max_seq_len,x_list,device)
+    generator = TransGenerator(label_dim,seq_dim,max_seq_len,x_list,device)
+    # discriminator = Discriminator(label_dim, series_word_vec_size* len(sery_attrs) + meta_word_vec_size * len(meta_attrs) ,max_seq_len,x_list,wv,device)
+    # value_net = ValueNet(label_dim, series_word_vec_size* len(sery_attrs) + meta_word_vec_size * len(meta_attrs), max_seq_len,x_list,device)
     
     generator.to(device)
-    discriminator.to(device)
-    value_net.to(device)
+    # discriminator.to(device)
+    # value_net.to(device)
 
     print(device)
 
@@ -641,15 +695,15 @@ def model_train(label_dict, dataset, json_folder, bins_folder, wordvec_folder, m
     # real_data = get_real_data(data_folder, label_dict, meta_attrs, sery_attrs, bins_data, max_seq_len)
     # train(generator, discriminator, dataloader, epochs, device, seq_dim, n_roll, n_critic, model_folder_name, checkpoint, real_data, bins_data, meta_attrs, sery_attrs, label_dict)
     
-    print("Pre-training...")
-    pre_trained_valuenet_epoch = 1
-    step_pre_train(generator, discriminator, value_net, dataloader, pre_trained_generator_epoch, pre_trained_discriminator_epoch, pre_trained_valuenet_epoch, device, model_folder_name)
+    # print("Pre-training...")
+    # pre_trained_valuenet_epoch = 1
+    # step_pre_train(generator, discriminator, value_net, dataloader, pre_trained_generator_epoch, pre_trained_discriminator_epoch, pre_trained_valuenet_epoch, device, model_folder_name)
     # step_pre_train(generator, discriminator, dataloader, pre_trained_generator_epoch, pre_trained_discriminator_epoch, pre_trained_valuenet_epoch, device, model_folder_name)
 
     print("Trainning...")
-    n_v_critic = 1
+    # n_v_critic = 1
     bins_data = dataset.bins_data
     real_data = get_real_data(data_folder, label_dict, meta_attrs, sery_attrs, bins_data, max_seq_len)
-    
-    step_train(generator, discriminator, value_net, dataloader, epochs, device, seq_dim, n_critic, n_v_critic, model_folder_name, checkpoint, real_data, bins_data, meta_attrs, sery_attrs, label_dict, n_roll)
+    lstm_train(generator,dataloader,epochs,device,model_folder_name,checkpoint,real_data,bins_data,meta_attrs,sery_attrs,label_dict)
+    # step_train(generator, discriminator, value_net, dataloader, epochs, device, seq_dim, n_critic, n_v_critic, model_folder_name, checkpoint, real_data, bins_data, meta_attrs, sery_attrs, label_dict, n_roll)
     # step_train(generator, discriminator, dataloader, epochs, device, seq_dim, n_critic, n_v_critic, model_folder_name, checkpoint, real_data, bins_data, meta_attrs, sery_attrs, label_dict, n_roll)

@@ -1,6 +1,6 @@
 {
     "path":{
-        "dataset": "iscx_small",
+        "dataset": "ssrc",
         "pcap_folder": "data-pcap",
         "json_folder": "data-json",
         "bins_folder": "bins",
@@ -15,10 +15,10 @@
         "n_critic": 5,
         "n_roll": 16,
         "batch_size": 64,
-        "epoch": 1000,
+        "epoch": 50,
         "pre_trained_generator_epoch": 50,
         "pre_trained_discriminator_epoch": 5,
-        "checkpoint": 50, 
+        "checkpoint": 10, 
         "expand_times": 0
     },
     "attributes":{

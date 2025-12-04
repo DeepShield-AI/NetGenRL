@@ -1,5 +1,6 @@
 import torch
-from seqCGAN.generator import Generator  # 假设你有一个定义好的 Discriminator 类
+# from seqCGAN.generator import Generator  # 假设你有一个定义好的 Discriminator 类
+from seqCGAN.transformer import TransGenerator  # 假设你有一个定义好的 Discriminator 类
 import json
 import random
 from post_process.check_bestmodel import get_real_data, SequenceDataset
@@ -89,7 +90,7 @@ def generate_data(label_dict, dataset, json_folder, bins_folder, wordvec_folder,
     model_name = save_folder + f'generator_{model_id}.pth'
     # model_name = save_folder + f'generator.pth'
         
-    generator = Generator(label_dim,seq_dim,max_seq_len,x_list,'cpu')
+    generator = TransGenerator(label_dim,seq_dim,max_seq_len,x_list,'cpu')
     checkpoint = torch.load(model_name, map_location=torch.device('cpu'))  # 加载保存的权重字典
     generator.load_state_dict(checkpoint)  # 将权重字典加载到模型中
     generator.eval()

@@ -1,8 +1,9 @@
 import json
 import os
 from pre_process import pcap_process, ChiMerge, wordvec
-from seqCGAN import model_train
-from post_process import check_bestmodel, data_save
+# from seqCGAN import model_train
+from post_process import check_bestmodel, data_save, transformer_data_save
+from transformer import model_train
 
 def check_and_make_forder(folder_path):
     if not os.path.exists(folder_path):
@@ -72,44 +73,69 @@ def driver():
     #                      config['model_paras']['meta_word_vec_size'])
     
     print("Training model ...")
+    
+    # model_train.model_train(label_dict, 
+    #                   config['path']['dataset'], 
+    #                   config['path']['json_folder'],
+    #                   config['path']['bins_folder'],
+    #                   config['path']['wordvec_folder'],
+    #                   config['path']['model_folder'],
+    #                   port_attr_names + ip_attr_names,
+    #                   sery_attr_names,
+    #                   config['model_paras'])
+
     model_train.model_train(label_dict, 
                       config['path']['dataset'], 
                       config['path']['json_folder'],
                       config['path']['bins_folder'],
-                      config['path']['wordvec_folder'],
                       config['path']['model_folder'],
-                      port_attr_names + ip_attr_names,
+                      port_attr_names,
+                      ip_attr_names,
                       sery_attr_names,
                       config['model_paras'])
     
-    print("Choosing best model ...")
-    model_id = check_bestmodel.check_models(label_dict,
-                                            config['path']['dataset'],
-                                            config['path']['json_folder'],
-                                            config['path']['bins_folder'],
-                                            config['path']['wordvec_folder'],
-                                            config['path']['model_folder'],
-                                            port_attr_names + ip_attr_names,
-                                            sery_attr_names,
-                                            config['model_paras']['batch_size'],
-                                            config['model_paras']['max_seq_len'],
-                                            config['model_paras']['checkpoint'],
-                                            config['model_paras']['epoch'])
+    # print("Choosing best model ...")
+    # model_id = check_bestmodel.check_models(label_dict,
+    #                                         config['path']['dataset'],
+    #                                         config['path']['json_folder'],
+    #                                         config['path']['bins_folder'],
+    #                                         config['path']['wordvec_folder'],
+    #                                         config['path']['model_folder'],
+    #                                         port_attr_names + ip_attr_names,
+    #                                         sery_attr_names,
+    #                                         config['model_paras']['batch_size'],
+    #                                         config['model_paras']['max_seq_len'],
+    #                                         config['model_paras']['checkpoint'],
+    #                                         config['model_paras']['epoch'])
+    
     
     print("Generating data ...")
-    data_save.generate_data(label_dict,
+    # data_save.generate_data(label_dict,
+    #                         config['path']['dataset'],
+    #                         config['path']['json_folder'],
+    #                         config['path']['bins_folder'],
+    #                         config['path']['wordvec_folder'],
+    #                         config['path']['model_folder'],
+    #                         config['path']['result_folder'],
+    #                         port_attr_names + ip_attr_names,
+    #                         sery_attr_names,
+    #                         config['model_paras']['batch_size'],
+    #                         config['model_paras']['max_seq_len'],
+    #                         config['model_paras']['checkpoint'],
+    #                         model_id,
+    #                         config['model_paras']['expand_times'])
+    
+    transformer_data_save.generate_data(label_dict,
                             config['path']['dataset'],
                             config['path']['json_folder'],
                             config['path']['bins_folder'],
-                            config['path']['wordvec_folder'],
                             config['path']['model_folder'],
                             config['path']['result_folder'],
-                            port_attr_names + ip_attr_names,
+                            port_attr_names,
+                            ip_attr_names,
                             sery_attr_names,
                             config['model_paras']['batch_size'],
                             config['model_paras']['max_seq_len'],
-                            config['model_paras']['checkpoint'],
-                            model_id,
                             config['model_paras']['expand_times'])
     
 

@@ -11,3 +11,4 @@ result/
 cuda*
 *.txt
 *.log
+*.pth
