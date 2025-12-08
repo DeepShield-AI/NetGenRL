@@ -627,38 +627,41 @@ def lstm_train(generator,  dataloader, epochs, device, model_path, checkpoint, r
             torch.save(generator.state_dict(), f'{model_path}generator_{epoch+1}.pth')
 
 # %%
-def model_train(label_dict, dataset, json_folder, bins_folder, wordvec_folder, model_folder,
+def model_train(label_dict, dataset, json_folder, bins_folder, model_folder,
                 meta_attrs, sery_attrs, 
                 model_paras):
     label_dim = len(label_dict)
     batch_size = model_paras['batch_size']
     epochs = model_paras['epoch']
     max_seq_len = model_paras['max_seq_len']
-    series_word_vec_size = model_paras['series_word_vec_size']
-    meta_word_vec_size = model_paras['meta_word_vec_size']
-    n_critic = model_paras['n_critic']
-    n_roll = model_paras['n_roll']
+    # series_word_vec_size = model_paras['series_word_vec_size']
+    # meta_word_vec_size = model_paras['meta_word_vec_size']
+    # n_critic = model_paras['n_critic']
+    # n_roll = model_paras['n_roll']
     checkpoint = model_paras['checkpoint']
-    pre_trained_generator_epoch = model_paras['pre_trained_generator_epoch']
-    pre_trained_discriminator_epoch = model_paras['pre_trained_discriminator_epoch']
+    # pre_trained_generator_epoch = model_paras['pre_trained_generator_epoch']
+    # pre_trained_discriminator_epoch = model_paras['pre_trained_discriminator_epoch']
     
     seq_dim = len(sery_attrs) + len(meta_attrs)
     
     data_folder = f'./{json_folder}/{dataset}/'
     bins_file_name = f'./{bins_folder}/bins_{dataset}.json'
-    wordvec_file_name = f'./{wordvec_folder}/word_vec_{dataset}.json'
+    # wordvec_file_name = f'./{wordvec_folder}/word_vec_{dataset}.json'
     model_folder_name = f'./{model_folder}/{dataset}/'
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    with open(wordvec_file_name, 'r') as f:
-        wv_dict = json.load(f)
+    # with open(wordvec_file_name, 'r') as f:
+    #     wv_dict = json.load(f)
     
-    wv = {}
-    for key, metrics in wv_dict.items():
-        wv[key] = torch.tensor(metrics, dtype=torch.float32).to(device)
+    # wv = {}
+    # for key, metrics in wv_dict.items():
+    #     wv[key] = torch.tensor(metrics, dtype=torch.float32).to(device)
 
-    x_list = [wv_tensor.size(0) for wv_tensor in wv.values()]
+    # x_list = [wv_tensor.size(0) for wv_tensor in wv.values()]
+    with open(bins_file_name, 'r') as f_bin:
+        bins_datas = json.load(f_bin)
+        x_list = [len(bins_data["intervals"]) for bins_data in bins_datas.values()]
     print(x_list)
    
 

@@ -64,26 +64,27 @@ def get_gen_data(label_dict, label_dim, real_data, label_str, generator, bins_da
         final_seqs.append(f_seq)
     return final_seqs         
 
-def generate_data(label_dict, dataset, json_folder, bins_folder, wordvec_folder, model_folder, result_folder, meta_attrs, sery_attrs, batch_size, max_seq_len, checkpoint, model_id, expand_times):
+def generate_data(label_dict, dataset, json_folder, bins_folder, model_folder, result_folder, meta_attrs, sery_attrs, batch_size, max_seq_len, checkpoint, model_id, expand_times):
     label_dim = len(label_dict)
     save_folder = f'./{model_folder}/{dataset}/'
     data_folder = f'./{json_folder}/{dataset}/'
     bins_file_name = f'./{bins_folder}/bins_{dataset}.json'
-    wordvec_file_name = f'./{wordvec_folder}/word_vec_{dataset}.json'
+    # wordvec_file_name = f'./{wordvec_folder}/word_vec_{dataset}.json'
     result_folder_name = f'./{result_folder}/{dataset}/'
     seq_dim = len(meta_attrs) + len(sery_attrs)
-    with open(wordvec_file_name, 'r') as f:
-        wv_dict = json.load(f)
+    # with open(wordvec_file_name, 'r') as f:
+    #     wv_dict = json.load(f)
     
-    wv = {}
-    for key, metrics in wv_dict.items():
-        wv[key] = torch.tensor(metrics, dtype=torch.float32)
+    # wv = {}
+    # for key, metrics in wv_dict.items():
+    #     wv[key] = torch.tensor(metrics, dtype=torch.float32)
     
-    x_list = [wv_tensor.size(0) for wv_tensor in wv.values()]
+    # x_list = [wv_tensor.size(0) for wv_tensor in wv.values()]
 
     bins_data = {}
     with open(bins_file_name, 'r') as f_bin:
         bins_data = json.load(f_bin)
+        x_list = [len(bins_d["intervals"]) for bins_d in bins_data.values()]
 
     real_datas = get_real_data(data_folder,label_dict,meta_attrs,sery_attrs,bins_data,max_seq_len)
     

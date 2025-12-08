@@ -1,21 +1,19 @@
-# sample.py
 import torch
 from model.unet import SimpleConditionalUNet
 from model.diffusion import Diffusion
 
 
-def main():
+def generate():
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    model = SimpleConditionalUNet(input_channels=1).to(device)
+    model = SimpleConditionalUNet().to(device)
     diffusion = Diffusion(model).to(device)
-    diffusion.load_state_dict(torch.load("diffusion.pth", map_location=device))
+    diffusion.load_state_dict(torch.load("model.pth", map_location=device))
 
-    label = torch.tensor([3], device=device)  # 生成 label=3 的矩阵
-    x = diffusion.sample(label, shape=(1, 1, 32, 32), device=device)
+    label = torch.tensor([3], device=device)
+    height = torch.tensor([40], device=device)   # 想生成高度=40 的流
+    shape = (1, 1, 40, 32)
 
-    print("Generated matrix:", x[0, 0])
+    x = diffusion.sample(label, height, shape, device=device)
 
-
-if __name__ == "__main__":
-    main()
+    print(x)

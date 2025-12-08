@@ -98,6 +98,7 @@ class TransGenerator(nn.Module):
         combined_out = torch.gather(fc_outputs, dim=1, index=indices).squeeze(1)
         
         seq_len = combined_out.size(1)
+        # seq_len = self.max_seq_len
         pos_ids = torch.arange(seq_len, device=combined_out.device).unsqueeze(0).expand(combined_out.size(0), -1)
         pos_embeddings = self.pos_emb(pos_ids)  # (B, S, hidden_dim)
         combined_out = combined_out + pos_embeddings

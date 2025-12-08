@@ -98,26 +98,28 @@ def pad(sequence, target_length, pad_value=np.nan):
         return sequence + padding  # 填充
     return sequence
 
-def check_models(label_dict, dataset, json_folder, bins_folder, wordvec_folder, model_folder, meta_attrs, sery_attrs, batch_size, max_seq_len, checkpoint, epochs): 
+def check_models(label_dict, dataset, json_folder, bins_folder, model_folder, meta_attrs, sery_attrs, batch_size, max_seq_len, checkpoint, epochs): 
     label_dim = len(label_dict)
     save_folder = f'./{model_folder}/{dataset}/'
     data_folder = f'./{json_folder}/{dataset}/'
     bins_file_name = f'./{bins_folder}/bins_{dataset}.json'
-    wordvec_file_name = f'./{wordvec_folder}/word_vec_{dataset}.json'
+    # wordvec_file_name = f'./{wordvec_folder}/word_vec_{dataset}.json'
     seq_dim = len(meta_attrs) + len(sery_attrs)
     
-    with open(wordvec_file_name, 'r') as f:
-        wv_dict = json.load(f)
+    # with open(wordvec_file_name, 'r') as f:
+    #     wv_dict = json.load(f)
     
-    wv = {}
-    for key, metrics in wv_dict.items():
-        wv[key] = torch.tensor(metrics, dtype=torch.float32)
+    # wv = {}
+    # for key, metrics in wv_dict.items():
+    #     wv[key] = torch.tensor(metrics, dtype=torch.float32)
+        
     
-    x_list = [wv_tensor.size(0) for wv_tensor in wv.values()]
+    # x_list = [wv_tensor.size(0) for wv_tensor in wv.values()]
 
     bins_data = {}
     with open(bins_file_name, 'r') as f_bin:
         bins_data = json.load(f_bin)
+        x_list = [len(bins_d["intervals"]) for bins_d in bins_data.values()]
 
     real_datas = get_real_data(data_folder,label_dict,meta_attrs,sery_attrs,bins_data,max_seq_len)
     
@@ -139,6 +141,7 @@ def check_models(label_dict, dataset, json_folder, bins_folder, wordvec_folder, 
             fake_datas[label] = fake_data
             
         ot_sum = 0
+        hm_sum = 0
         for label in label_dict.keys():
             real_data = real_datas[label]
             fake_data = fake_datas[label]
@@ -152,14 +155,21 @@ def check_models(label_dict, dataset, json_folder, bins_folder, wordvec_folder, 
             Y_filled = np.nan_to_num(Y, nan=1)
     
             cost_matrix = np.linalg.norm(X_filled[:, None, :, :] - Y_filled[None, :, :, :], axis=(-2, -1))
+            cost_matrix_ham = np.zeros((X_filled.shape[0], Y_filled.shape[0]))
+            for i in range(X_filled.shape[0]):
+                for j in range(Y_filled.shape[0]):
+                    hamming_distance = np.sum(X_filled[i] != Y_filled[j])
+                    cost_matrix_ham[i, j] = hamming_distance
         
             ot_distance = ot.emd2([], [], cost_matrix) 
+            hm_distance = ot.emd2([], [], cost_matrix_ham) 
             
             # print(f"label {label}: {ot_distance}")
             
             ot_sum += ot_distance
+            hm_sum += hm_distance
         
-        print(f"model {model_id} OT:", ot_sum)
+        print(f"model {model_id} OT:", ot_sum, "HM:",hm_sum)
             
         if min_ot > ot_sum:
             min_ot = ot_sum

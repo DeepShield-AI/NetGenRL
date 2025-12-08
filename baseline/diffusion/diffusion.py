@@ -32,9 +32,9 @@ class Diffusion(nn.Module):
             self.sqrt_one_minus_alpha_cumprod[t][:, None, None, None] * noise
         )
 
-    def p_mean_variance(self, xt, t, label):
+    def p_mean_variance(self, xt, t, label, height):
         """反向扩散: μ_t"""
-        noise_pred = self.model(xt, t, label)
+        noise_pred = self.model(xt, t, label, height)
 
         alpha_t = self.alphas[t][:, None, None, None]
         alpha_cum_t = self.alpha_cumprod[t][:, None, None, None]
@@ -48,14 +48,14 @@ class Diffusion(nn.Module):
 
         return mean, beta_t
 
-    def sample(self, label, shape, device):
+    def sample(self, label, shape, device, height):
         """依据 label 采样新矩阵"""
         x = torch.randn(shape, device=device)
 
         for t in reversed(range(self.timesteps)):
             tt = torch.full((shape[0],), t, dtype=torch.long, device=device)
 
-            mean, var = self.p_mean_variance(x, tt, label)
+            mean, var = self.p_mean_variance(x, tt, label, height)
 
             if t > 0:
                 noise = torch.randn_like(x)
@@ -65,7 +65,7 @@ class Diffusion(nn.Module):
 
         return x
 
-    def loss(self, x0, label):
+    def loss(self, x0, label, height):
         """DDPM 训练 loss：预测噪声"""
         B = x0.size(0)
         t = torch.randint(0, self.timesteps, (B,), device=x0.device)
@@ -73,6 +73,6 @@ class Diffusion(nn.Module):
 
         xt = self.q_sample(x0, t, noise)
 
-        noise_pred = self.model(xt, t, label)
+        noise_pred = self.model(xt, t, label, height)
 
         return F.mse_loss(noise_pred, noise)

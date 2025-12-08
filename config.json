@@ -11,7 +11,7 @@
     "model_paras":{
         "series_word_vec_size": 8,
         "meta_word_vec_size": 4,
-        "max_seq_len": 16,
+        "max_seq_len": 64,
         "n_critic": 5,
         "n_roll": 16,
         "batch_size": 64,

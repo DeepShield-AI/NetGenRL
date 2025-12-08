@@ -7,7 +7,7 @@ import random
 from post_process.check_bestmodel import SequenceDataset
 from torch.utils.data import DataLoader
 
-MAX_SEQ_LEN = 16
+MAX_SEQ_LEN = 32
 
 def pad(sequence, target_length, pad_value=np.nan):
     seq_len = len(sequence)

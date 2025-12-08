@@ -47,6 +47,8 @@ class CustomDataset(Dataset):
                     return idx 
             if round(value,2) > intervals[-1][1]:
                 return len(intervals) - 1
+            if round(value,2) < intervals[0][0]:
+                return 0
             return None
             
         item = self.data[idx]
@@ -79,7 +81,7 @@ class CustomDataset(Dataset):
         if len(seq) < self.max_seq_len:
             seq = np.pad(seq, ((0, self.max_seq_len - len(seq)), (0, 0)), mode='constant', constant_values=0)
         
-        
+        # print(seq)
         seq = torch.tensor(seq, dtype=torch.long)
         length = torch.tensor(length, dtype=torch.float32)
         weight = torch.tensor(weight, dtype=torch.float32)
