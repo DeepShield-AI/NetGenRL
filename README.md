@@ -1,6 +1,6 @@
 # NetGenRL
 ## Introduction
-NetGenRL is a sequence adversarial generation network based on reinforcement learning, which is designed for labeled network traffic generation.
+NetGenRL is a Transformer generation model, which is designed for labeled network traffic generation.
 
 ## Setup
 NetGenRL is written under Python 3.12. Following Python package is needed before running.
