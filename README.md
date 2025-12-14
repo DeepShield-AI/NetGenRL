@@ -41,7 +41,6 @@ data-pcap
         * pcap\_folder: training data folder
         * json\_folder: json fommat training data folder (convert in pre-processing)
         * bins\_folder: folder of bins
-        * wordvec\_folder: folder of word vector model
         * model\_folder: folder of trained generation model
         * result\_folder: folder to save generation model
     * model\_paras: hyper-parameters of generation model
