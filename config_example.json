@@ -1,25 +1,18 @@
 {
     "path":{
-        "dataset": "iscx_small",
+        "dataset": "iscx",
         "pcap_folder": "data-pcap",
         "json_folder": "data-json",
         "bins_folder": "bins",
-        "wordvec_folder": "wordvec",
         "model_folder": "model",
         "result_folder": "result"
     },
     "model_paras":{
-        "series_word_vec_size": 8,
-        "meta_word_vec_size": 4,
         "max_seq_len": 16,
-        "n_critic": 5,
-        "n_roll": 16,
         "batch_size": 64,
-        "epoch": 500,
-        "pre_trained_generator_epoch": 50,
-        "pre_trained_discriminator_epoch": 5,
-        "checkpoint": 50, 
-        "expand_times": 2
+        "epoch": 50,
+        "checkpoint": 10, 
+        "expand_times": 0
     },
     "attributes":{
         "sery_attribute": {
