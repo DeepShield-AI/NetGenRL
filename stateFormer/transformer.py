@@ -2,50 +2,64 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+
 class TransGenerator(nn.Module):
     def __init__(self, label_dim, seq_dim, max_seq_len, x_list, device):
-        super(TransGenerator, self).__init__()
-        
+        super().__init__()
+
         self.label_dim = label_dim
+        self.seq_dim = seq_dim
+        self.max_seq_len = max_seq_len
+        self.x_list = x_list
+        self.pred_dim = sum(x_list)
+        self.device = device
+
+        # ===== 维度 =====
         self.hidden_dim = 512
-        # self.lstm_layers = 4
-        self.transformer_layers = 4
         self.embedding_dim = 128
         self.attribute_dim = 64
-        self.max_seq_len = max_seq_len
-        self.seq_dim = seq_dim
-        self.pred_dim = sum(x_list)
-        self.x_list = x_list # list of seq value dim
-        self.device = device
-        self.count_list = []
-                
+        self.state_dim = 64
+        self.noise_dim = 32
+        self.length_emb_dim = 64
+        self.noise_pos_emb_dim = 16
+        self.transformer_layers = 4
+
+        # ===== 共享 Embedding =====
         self.emb = nn.ModuleList([
             nn.Embedding(x_len, self.embedding_dim) for x_len in x_list
-        ]) 
-        
+        ])
+
         self.pad_embedding = nn.Parameter(torch.zeros(1, self.attribute_dim))
-        
+
+        # ===== 字段内自回归 =====
         self.condition_fix = nn.ModuleList([
             nn.Sequential(
-                nn.Linear((i + 1)*self.embedding_dim, self.attribute_dim),
-                nn.ReLU(True),
-            ) for i in range(len(x_list)-1)
+                nn.Linear((i + 1) * self.embedding_dim, self.attribute_dim),
+                nn.ReLU()
+            ) for i in range(len(x_list) - 1)
         ])
-        
+
+        # ===== length =====
         self.length_fc = nn.Sequential(
-            nn.Linear(max_seq_len, 64),
-            nn.ReLU(True),
-        ) 
-        
-        self.combine_fc = nn.ModuleList([
+            nn.Linear(max_seq_len, self.length_emb_dim),
+            nn.ReLU()
+        )
+
+        # =====================================================
+        # ✅ label-controlled heads（核心）
+        # =====================================================
+
+        # 输入头（类似原 combine_fc）
+        self.input_heads = nn.ModuleList([
             nn.Sequential(
-                nn.Linear(128*len(x_list)+64,self.hidden_dim),
-                nn.ReLU(True)
-            ) for _ in range(self.label_dim)
+                nn.Linear(self.embedding_dim * len(x_list) + self.length_emb_dim, self.hidden_dim),
+                nn.ReLU()
+            ) for _ in range(label_dim)
         ])
-        
-        self.pos_emb = nn.Embedding(self.max_seq_len, self.hidden_dim)
-        
+
+        # ===== Transformer =====
+        self.pos_emb = nn.Embedding(max_seq_len, self.hidden_dim)
+
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=self.hidden_dim,
             nhead=8,
@@ -55,110 +69,220 @@ class TransGenerator(nn.Module):
             activation="relu"
         )
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=self.transformer_layers)
-        
-        # self.lstm = nn.LSTM(input_size=self.hidden_dim, hidden_size=self.hidden_dim, num_layers=self.lstm_layers, batch_first=True)
-        # self.lstm.flatten_parameters()
 
+        # ===== 状态头（IB）=====
+        self.state_mu = nn.Linear(self.hidden_dim, self.state_dim)
+        self.state_logvar = nn.Linear(self.hidden_dim, self.state_dim)
+  
+        # ===== 噪声头（关键：不依赖历史）=====
+        # self.pos_fc = nn.Sequential(
+        #     nn.Linear(max_seq_len, self.noise_pos_emb_dim),
+        #     nn.ReLU()
+        # )
+        
+        # self.noise_heads = nn.ModuleList([
+        #     nn.Sequential(
+        #         nn.Linear(self.noise_dim + self.length_emb_dim + self.noise_pos_emb_dim, self.noise_dim),  # eps + pos + length
+        #         nn.ReLU()
+        #     ) for _ in range(label_dim)
+        # ])
+        self.noise_heads = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(self.noise_dim + self.length_emb_dim, self.noise_dim),  # eps + pos + length
+                nn.ReLU()
+            ) for _ in range(label_dim)
+        ])
+
+        # ===== 输出层 =====
         self.output_layer = nn.ModuleList([
             nn.Sequential(
-                nn.Linear(self.hidden_dim + self.attribute_dim, x_len),
+                nn.Linear(self.state_dim + self.noise_dim + self.attribute_dim, x_len),
                 nn.Identity()
             ) for x_len in x_list
         ])
         
         self.softmax = nn.LogSoftmax(dim=-1)
-        
-    def forward(self, label, length, x, x_now): # x: (batch_size, seq_len, seq_dim)
-        # self.lstm.flatten_parameters()
+
+    # =====================================================
+    # forward
+    # =====================================================
+    def forward(self, label, length, x, x_now):
+
+        B, S, _ = x.shape
+        label_int = torch.argmax(label.clone(), dim=1)
+
+        # ===== length =====
         length_one_hot = F.one_hot((length.clone().detach().long() - 1), num_classes=self.max_seq_len).float().to(self.device)
-
-        label_int = torch.argmax(label.clone(),1)
         length_out = self.length_fc(length_one_hot)
+        length_expand = length_out.unsqueeze(1).expand(-1, S, -1)
 
-        emb_list = torch.cat([self.emb[i](x[:,:,i]) for i in range(len(self.x_list))], dim=2)
-        
-        now_emb_list = torch.cat([self.emb[i](x_now[:,:,i]) for i in range(len(self.x_list)-1)], dim=2)
-        attribute_features = [self.condition_fix[i](now_emb_list[:,:,:(i+1)*self.embedding_dim]) for i in range(len(self.x_list) - 1)]
-        attribute_features = [self.pad_embedding.expand(x_now.shape[0],x_now.shape[1],self.attribute_dim)] + attribute_features
-        
-        length_expand = length_out.unsqueeze(1).expand(-1, emb_list.size(1), -1)
+        # ===== embedding =====
+        emb_list = torch.cat([self.emb[i](x[:, :, i]) for i in range(len(self.x_list))], dim=2)
 
         combined = torch.cat([emb_list, length_expand], dim=2)
-        
-        fc_outputs = torch.stack([self.combine_fc[idx](combined) for idx in range(len(self.combine_fc))], dim=1)
-        
-        indices = label_int.view(-1, 1, 1, 1).expand(-1, -1, fc_outputs.size(2), fc_outputs.size(3))
 
-        combined_out = torch.gather(fc_outputs, dim=1, index=indices).squeeze(1)
-        
+        # ===== label 路由 =====
+        head_outputs = torch.stack([self.input_heads[idx](combined) for idx in range(self.label_dim)],dim=1)  # (B, L, S, H)
+
+        index = label_int.view(B, 1, 1, 1).expand(-1, 1, S, self.hidden_dim)
+        combined_out = torch.gather(head_outputs, 1, index).squeeze(1)
         seq_len = combined_out.size(1)
-        pos_ids = torch.arange(seq_len, device=combined_out.device).unsqueeze(0).expand(combined_out.size(0), -1)
-        pos_embeddings = self.pos_emb(pos_ids)  # (B, S, hidden_dim)
-        combined_out = combined_out + pos_embeddings
-        mask = torch.triu(torch.ones(seq_len, seq_len, device=x.device), diagonal=1).bool()
-        hidden_output = self.transformer(combined_out,mask = mask)
+        # ===== Transformer =====
+        pos_ids = torch.arange(seq_len, device=self.device).unsqueeze(0).expand(B, -1)
+        combined_out = combined_out + self.pos_emb(pos_ids)
 
+        mask = torch.triu(torch.ones(seq_len, seq_len, device=self.device), diagonal=1).bool()
+        hidden = self.transformer(combined_out, mask=mask)
+
+        # =====================================================
+        # ✅ 状态（IB）
+        # =====================================================
+        # mu_all = torch.stack([head(hidden) for head in self.state_mu_heads], dim=1)
+        # logvar_all = torch.stack([head(hidden) for head in self.state_logvar_heads], dim=1)
+
+        # index_state = label_int.view(B, 1, 1, 1).expand(-1, 1, S, self.state_dim)
+
+        # mu = torch.gather(mu_all, 1, index_state).squeeze(1)
+        # logvar = torch.gather(logvar_all, 1, index_state).squeeze(1)
+        mu = self.state_mu(hidden)          # (B,S,state_dim)
+        logvar = self.state_logvar(hidden)  # (B,S,state_dim)
+        std = torch.exp(0.5 * logvar)
+        eps_state = torch.randn_like(std)
+        s_t = mu + eps_state * std
+
+        # =====================================================
+        # ✅ 噪声（只依赖 t, label, length）
+        # =====================================================
+        eps = torch.randn(B, S, self.noise_dim).to(self.device)
+
+        # pos_norm = (pos_ids.float() / self.max_seq_len).unsqueeze(-1)
+        # length_norm = (length.unsqueeze(1).expand(-1, S) / self.max_seq_len).unsqueeze(-1)
+        # pos_emb_noise = self.pos_fc(pos_ids.float())  # (B, S, noise_pos_emb_dim)
+        # pos_emb_noise_expand = pos_emb_noise.unsqueeze(1).expand(-1, S, -1)
+        # noise_input = torch.cat([eps, length_expand, pos_emb_noise_expand], dim=2)
+        
+        noise_input = torch.cat([eps, length_expand], dim=2)
+
+        noise_all = torch.stack([self.noise_heads[i](noise_input) for i in range(self.label_dim)],dim=1)
+        index_noise = label_int.view(B, 1, 1, 1).expand(-1, 1, S, self.noise_dim)
+        z_t = torch.gather(noise_all, 1, index_noise).squeeze(1)
+
+        # ===== attribute =====
+        now_emb = torch.cat([self.emb[i](x_now[:, :, i]) for i in range(len(self.x_list) - 1)], dim=2)
+
+        # attr = [self.pad_embedding.expand(B, S, -1)]
+        # for i in range(len(self.x_list) - 1):
+        #     attr.append(
+        #         self.condition_fix[i](
+        #             now_emb[:, :, :(i + 1) * self.embedding_dim]
+        #         )
+        #     )
+        
+        attribute_features = [self.condition_fix[i](now_emb[:,:,:(i+1)*self.embedding_dim]) for i in range(len(self.x_list) - 1)]
+        attribute_features = [self.pad_embedding.expand(x_now.shape[0],x_now.shape[1],self.attribute_dim)] + attribute_features
+
+        # ===== decode =====
         preds = []
         for i in range(len(self.x_list)):
-            hidden_w_attr = torch.cat([hidden_output, attribute_features[i]], dim=2)
-            output = self.output_layer[i](hidden_w_attr.contiguous().view(-1, self.hidden_dim + self.attribute_dim))
-            pred = self.softmax(output)
-            preds.append(pred)
-            
-        preds = torch.cat(preds, dim=1).view(-1, self.max_seq_len, self.pred_dim) 
-        return preds
-    
+            h = torch.cat([s_t, z_t, attribute_features[i]], dim=2)
+            out = self.output_layer[i](h.reshape(-1, h.shape[-1]))
+            preds.append(F.log_softmax(out, dim=-1))
+
+        preds = torch.cat(preds, dim=1).view(B, S, self.pred_dim)
+
+        return {
+            "preds": preds,
+            "mu": mu,
+            "logvar": logvar,
+            "state": s_t,
+            "noise": z_t
+        }
+
+    # =====================================================
+    # get_hidden（用于生成）
+    # =====================================================
     def get_hidden(self, label, length, x):
-        
-        length_one_hot = F.one_hot((length.clone().detach().long() - 1), num_classes=self.max_seq_len).float().to(self.device)
-        
-        length_out = self.length_fc(length_one_hot)
-        label_int = torch.argmax(label.clone(),1)
-        
+
         if x.dim() == 2:
-            x_seq = x.unsqueeze(1)   # (B,1,seq_dim)
+            x = x.unsqueeze(1)
         elif x.dim() == 3:
             x_seq = x                # (B,S,seq_dim)
         else:
             raise RuntimeError("Unsupported x shape in get_hidden: %s" % (x.shape,))
-        
-        B, S, T = x_seq.shape
-        
-        emb_list = torch.cat([self.emb[i](x_seq[:,:,i]) for i in range(len(self.x_list))], dim=2)
-        
-        length_expand = length_out.unsqueeze(1).expand(-1, emb_list.size(1), -1)
 
+        B, S, _ = x.shape
+        label_int = torch.argmax(label.clone(), dim=1)
+
+        length_one_hot = F.one_hot((length.clone().detach().long() - 1), num_classes=self.max_seq_len).float().to(self.device)
+        length_out = self.length_fc(length_one_hot)
+        length_expand = length_out.unsqueeze(1).expand(-1, S, -1)
+
+        emb_list = torch.cat([self.emb[i](x[:, :, i]) for i in range(len(self.x_list))], dim=2)
         combined = torch.cat([emb_list, length_expand], dim=2)
-        
-        fc_outputs = torch.stack([self.combine_fc[idx](combined) for idx in range(len(self.combine_fc))], dim=1)
-        
-        indices = label_int.view(-1, 1, 1, 1).expand(-1, -1, fc_outputs.size(2), fc_outputs.size(3))
-        
-        combined_out = torch.gather(fc_outputs, dim=1, index=indices).squeeze(1)
-        
-        seq_len = combined_out.size(1)
-        pos_ids = torch.arange(seq_len, device=combined_out.device).unsqueeze(0).expand(combined_out.size(0), -1)
-        pos_embeddings = self.pos_emb(pos_ids)  # (B, S, hidden_dim)
-        combined_out = combined_out + pos_embeddings
 
-        mask = torch.triu(torch.ones(seq_len, seq_len, device=x.device), diagonal=1).bool()
-        hidden_seq = self.transformer(combined_out,mask=mask)
-        hidden_output = hidden_seq[:,-1,:]  # (B, hidden_dim)   
-            
-        return hidden_output
+        head_outputs = torch.stack([self.input_heads[i](combined) for i in range(self.label_dim)],dim=1)
+
+        index = label_int.view(B, 1, 1, 1).expand(-1, 1, S, self.hidden_dim)
+        combined_out = torch.gather(head_outputs, 1, index).squeeze(1)
+
+        seq_len = combined_out.size(1)
+        pos_ids = torch.arange(seq_len, device=self.device).unsqueeze(0).expand(B, -1)
+        combined_out = combined_out + self.pos_emb(pos_ids)
+
+        mask = torch.triu(torch.ones(seq_len, seq_len, device=self.device), diagonal=1).bool()
+        hidden = self.transformer(combined_out, mask=mask)
+
+        # mu_all = torch.stack([head(hidden) for head in self.state_mu_heads], dim=1)
+
+        # index_state = label_int.view(B, 1, 1, 1).expand(-1, 1, S, self.state_dim)
+        # mu = torch.gather(mu_all, 1, index_state).squeeze(1)
+        mu = self.state_mu(hidden)          # (B,S,state_dim)
+        # logvar = self.state_logvar(hidden)  # (B,S,state_dim)
+
+        return mu[:, -1, :]  # 用均值
     
-    def step_w_hidden(self, hidden_output, x_now, dim_now):
+    def get_noise(self, label, length, seq_len):
+        B = label.size(0)
+        label_int = torch.argmax(label.clone(), dim=1)
+
+        length_one_hot = F.one_hot((length.clone().detach().long() - 1), num_classes=self.max_seq_len).float().to(self.device)
+        length_out = self.length_fc(length_one_hot)
+        length_expand = length_out.unsqueeze(1).expand(-1, seq_len, -1)
+
+        # pos_ids = torch.arange(seq_len, device=self.device).unsqueeze(0).expand(B, -1)
+        # print(pos_ids.shape)
+        # pos_emb_noise = self.pos_fc(pos_ids.float())  # (B, S, noise_pos_emb_dim)
+        # pos_emb_noise_expand = pos_emb_noise.unsqueeze(1).expand(-1, seq_len, -1)
+
+        eps = torch.randn(B, seq_len, self.noise_dim).to(self.device)
+        # noise_input = torch.cat([eps, length_expand, pos_emb_noise_expand], dim=2)
+        noise_input = torch.cat([eps, length_expand], dim=2)
+
+        noise_all = torch.stack([self.noise_heads[i](noise_input) for i in range(self.label_dim)],dim=1)
+        index_noise = label_int.view(B, 1, 1, 1).expand(-1, 1, seq_len, self.noise_dim)
+        z_t = torch.gather(noise_all, 1, index_noise).squeeze(1)
+
+        return z_t[:, -1, :]  # 返回最后一个时间步的噪声
+
+    # =====================================================
+    # step（字段生成）
+    # =====================================================
+    def step_w_hidden(self, s_t, z_t, x_now, dim_now):
+
         if dim_now > 0 and x_now is not None:
-            now_emb_list = torch.cat([self.emb[i](x_now[:,i]) for i in range(dim_now)], dim=1)
-            attribute_feature = self.condition_fix[dim_now - 1](now_emb_list)
+            now_emb = torch.cat([self.emb[i](x_now[:, i]) for i in range(dim_now)], dim=1)
+            attr = self.condition_fix[dim_now - 1](now_emb)
         else:
-            attribute_feature = self.pad_embedding.expand(hidden_output.shape[0],self.attribute_dim)
-            
-        hidden_w_attr = torch.cat([hidden_output, attribute_feature], dim=1)
-        output = self.output_layer[dim_now](hidden_w_attr.contiguous())
-        pred = F.softmax(output,dim=-1)
-        return pred
-    
+            attr = self.pad_embedding.expand(s_t.shape[0], -1)
+
+        h = torch.cat([s_t, z_t, attr], dim=1)
+        out = self.output_layer[dim_now](h)
+
+        return F.softmax(out, dim=-1)
+
+    # =====================================================
+    # sample
+    # =====================================================
     def sample(self, batch_size, label, length, x=None):
         flag = False # whether sample from zero
         if x is None:
@@ -170,12 +294,13 @@ class TransGenerator(nn.Module):
         if flag:
             for i in range(self.max_seq_len): 
                 last = None
-                sam = []
-                hidden_output = self.get_hidden(label, length, x)
+                step_out = []
+                st = self.get_hidden(label, length, x)
+                zt = self.get_noise(label, length, i+1)
                 for j in range(len(self.x_list)):
-                    pred = self.step_w_hidden(hidden_output, last, j)
-                    sam.append(pred.multinomial(1))
-                    last = torch.cat(sam,dim=1)
+                    pred = self.step_w_hidden(st, zt, last, j)
+                    step_out.append(pred.multinomial(1))
+                    last = torch.cat(step_out, dim=1)
                 x = torch.cat([x,last.unsqueeze(1)],dim = 1)
                 # samples.append(x)
                 samples.append(last)
@@ -190,13 +315,14 @@ class TransGenerator(nn.Module):
             
             for i in range(given_len, self.max_seq_len):
                 # samples.append(sam_tensor)
-                sam = []
+                step_out = []
                 last = None
-                hidden_output = self.get_hidden(label, length, sam_tensor)
+                st = self.get_hidden(label, length, sam_tensor)
+                zt = self.get_noise(label, length, i+1)
                 for j in range(len(self.x_list)):
-                    pred = self.step_w_hidden(hidden_output, last, j)
-                    sam.append(pred.multinomial(1))
-                    last = torch.cat(sam,dim=1)
+                    pred = self.step_w_hidden(st, zt, last, j)
+                    step_out.append(pred.multinomial(1))
+                    last = torch.cat(step_out, dim=1)
                 # sam_tensor = last
                 sam_tensor = torch.cat([sam_tensor,last.unsqueeze(1)],dim = 1)
                 samples.append(last)

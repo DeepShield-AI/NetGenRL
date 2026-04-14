@@ -12,6 +12,7 @@ def transformer_train(generator, dataloader, epochs, device, model_path, checkpo
     # train generator
     gen_optimizer = optim.Adam(generator.parameters(),lr=0.0001, betas=(0.5, 0.999))
     x_list = generator.x_list
+    beta = 0.001
     
     for epoch in range(epochs):
         start = time.perf_counter()
@@ -29,7 +30,11 @@ def transformer_train(generator, dataloader, epochs, device, model_path, checkpo
             
             seqs_seed = torch.cat([zero, seqs[:,:-1,:]], dim=1) # (batch_size, seq_len, seq_dim)
             
-            fake_preds = generator.forward(labels, lengths, seqs_seed, seqs) # (batch_size, seq_len, prob_dim)
+            # fake_preds = generator.forward(labels, lengths, seqs_seed, seqs) # (batch_size, seq_len, prob_dim)
+            generated_dict = generator.forward(labels, lengths, seqs_seed, seqs) # (batch_size, seq_len, prob_dim)
+            fake_preds = generated_dict['preds']
+            mu = generated_dict['mu']
+            logvar = generated_dict['logvar']
             
             target = seqs # (batch_size, seq_len, seq_dim)
             
@@ -42,6 +47,13 @@ def transformer_train(generator, dataloader, epochs, device, model_path, checkpo
                 loss = loss * mask * weights
                 g_loss += loss.sum()
                 count += x_len
+                
+                kl_loss = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp())
+                kl_loss = kl_loss.sum(dim=-1)  # (B,S)
+                kl_loss = kl_loss * mask * weights
+                kl_loss = kl_loss.sum()
+                
+                g_loss = g_loss + beta * kl_loss
                 
             g_loss = g_loss/len(x_list)
             gen_optimizer.zero_grad()

@@ -40,22 +40,22 @@ def driver():
     check_and_make_forder(config['path']['result_folder'])
     check_and_make_forder(f"./{config['path']['result_folder']}/{config['path']['dataset']}")
     
-    print("Processing pcap to json ...")
+    # print("Processing pcap to json ...")
     
-    pcap_process.process_pcap(f"./{config['path']['pcap_folder']}/{config['path']['dataset']}",
-                              label_dict,
-                              f"./{config['path']['json_folder']}/{config['path']['dataset']}")
+    # pcap_process.process_pcap(f"./{config['path']['pcap_folder']}/{config['path']['dataset']}",
+    #                           label_dict,
+    #                           f"./{config['path']['json_folder']}/{config['path']['dataset']}")
     
-    print("Binning data ...")
+    # print("Binning data ...")
     
-    ChiMerge.chimerge(config['path']['dataset'],
-                      config['path']['json_folder'],
-                      config['path']['bins_folder'],
-                      ip_attr_names,
-                      port_attr_names,
-                      sery_attr_names,
-                      config['model_paras']['max_seq_len'],
-                      param_dicts)
+    # ChiMerge.chimerge(config['path']['dataset'],
+    #                   config['path']['json_folder'],
+    #                   config['path']['bins_folder'],
+    #                   ip_attr_names,
+    #                   port_attr_names,
+    #                   sery_attr_names,
+    #                   config['model_paras']['max_seq_len'],
+    #                   param_dicts)
     
     print("Training model ...")
     
