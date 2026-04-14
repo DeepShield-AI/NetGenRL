@@ -303,8 +303,10 @@ def cal_bins(data_dic, min_unit, min_value, max_value):
             intervals[i] = [round(intervals[i][0],precision),round(intervals[i][1],precision)]
         intervals_dict[category] = intervals
     integrated_intervals = integrate_bins(intervals_dict,min_unit,min_value)
-    filtered_intervals = filter_bins(integrated_intervals,data_dic,min_unit,min_value,max_value)
-    return filtered_intervals
+    # filtered_intervals = filter_bins(integrated_intervals,data_dic,min_unit,min_value,max_value)
+    # filtered_intervals = integrated_intervals
+    # return filtered_intervals
+    return integrated_intervals
     
     
 
