@@ -49,6 +49,7 @@ class CustomDataset(Dataset):
                 return len(intervals) - 1
             if round(value,2) < intervals[0][0]:
                 return 0
+            print(f"Value {value} not found in any interval.")
             return None
             
         item = self.data[idx]
@@ -72,6 +73,7 @@ class CustomDataset(Dataset):
             id_list = []
             for attr in self.sery_attrs:
                 id_list.append(find_interval(pkt[attr],self.bins_data[attr]['intervals']))
+                # print(attr)
             id_list += meta_list
             seq.append(id_list)
             count += 1

@@ -341,6 +341,10 @@ def chimerge(dataset, json_folder, bins_folder, ip_attrs, port_attrs, sery_attrs
         print(label,':', len(merged_intervals))
         for i in range(len(merged_intervals)):
             merged_intervals[i] = [round(merged_intervals[i][0],2),round(merged_intervals[i][1],2)]
+            if i == 0:
+                continue
+            if merged_intervals[i][0] > round(merged_intervals[i-1][1] + params_dic[label]['min_unit'],2):
+                merged_intervals[i][0] = round(merged_intervals[i-1][1] + params_dic[label]['min_unit'],2)
         # result_dic[label] = {'intervals':merged_intervals,'data':merged_data.tolist()}
         result_dic[label] = {'intervals':merged_intervals}
     

@@ -1,6 +1,6 @@
 {
     "path":{
-        "dataset": "iscx_small",
+        "dataset": "iscx",
         "pcap_folder": "data-pcap",
         "json_folder": "data-json",
         "bins_folder": "bins",
@@ -10,9 +10,9 @@
     "model_paras":{
         "max_seq_len": 16,
         "batch_size": 64,
-        "epoch": 50,
-        "checkpoint": 10, 
-        "expand_times": 0
+        "epoch": 1000,
+        "checkpoint": 100, 
+        "expand_times": 9
     },
     "attributes":{
         "sery_attribute": {

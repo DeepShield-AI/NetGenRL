@@ -1,6 +1,6 @@
 import json
 import os
-from pre_process import pcap_process, ChiMerge
+from pre_process import pcap_process, ChiMerge,baseline
 from stateFormer import model_train
 from post_process import check_bestmodel, data_save
 
@@ -12,19 +12,24 @@ def construct_label_dict(pcap_folder, dataset):
     label_dict = {}
     count = 0
     for filename in os.listdir(f"./{pcap_folder}/{dataset}/"):
-        if filename.endswith('.pcap') or filename.endswith('.pcapng'):
+        # if filename.endswith('.pcap') or filename.endswith('.pcapng'):
+        #     label = filename.split('.')[0]
+        #     label_dict[label] = count
+        #     count += 1
+        if filename.endswith('.json'):
             label = filename.split('.')[0]
             label_dict[label] = count
             count += 1
     return label_dict
         
 
-def driver():
-    with open("./config.json","r") as file:
-        config = json.load(file)
-    print(config)
+def driver(config):
+    # with open("./config.json","r") as file:
+    #     config = json.load(file)
+    # print(config)
     
-    label_dict = construct_label_dict(config['path']['pcap_folder'],config['path']['dataset'])
+    # label_dict = construct_label_dict(config['path']['pcap_folder'],config['path']['dataset'])
+    label_dict = construct_label_dict(config['path']['json_folder'],config['path']['dataset'])
     sery_attr_names = list(config['attributes']['sery_attribute'].keys())
     port_attr_names = list(config['attributes']['port_attribute'].keys())
     ip_attr_names = list(config['attributes']['ip_attribute'].keys())
@@ -56,17 +61,25 @@ def driver():
     #                   sery_attr_names,
     #                   config['model_paras']['max_seq_len'],
     #                   param_dicts)
+    # baseline.basemerge(config['path']['dataset'],
+    #                     config['path']['json_folder'],
+    #                     config['path']['bins_folder'],
+    #                     ip_attr_names,
+    #                     port_attr_names,
+    #                     sery_attr_names,
+    #                     config['model_paras']['max_seq_len'],
+    #                     param_dicts)
     
-    print("Training model ...")
+    # print("Training model ...")
     
-    model_train.model_train(label_dict, 
-                      config['path']['dataset'], 
-                      config['path']['json_folder'],
-                      config['path']['bins_folder'],
-                      config['path']['model_folder'],
-                      port_attr_names + ip_attr_names,
-                      sery_attr_names,
-                      config['model_paras'])
+    # model_train.model_train(label_dict, 
+    #                   config['path']['dataset'], 
+    #                   config['path']['json_folder'],
+    #                   config['path']['bins_folder'],
+    #                   config['path']['model_folder'],
+    #                   port_attr_names + ip_attr_names,
+    #                   sery_attr_names,
+    #                   config['model_paras'])
     
     print("Choosing best model ...")
     model_id = check_bestmodel.check_models(label_dict,
@@ -96,7 +109,20 @@ def driver():
                             config['model_paras']['checkpoint'],
                             model_id,
                             config['model_paras']['expand_times'])
-    
+
+def read_config():
+    with open("./config.json","r") as file:
+        config = json.load(file)
+    return config    
 
 if __name__ == "__main__":
-    driver()
+    config = read_config()
+    DATASETS = [
+        "iscx_1", "ssrc_1"
+    ]
+    for dataset in DATASETS:
+        print(f"Begin processing dataset: {dataset} ----------------------\n\n")
+        config['path']['dataset'] = dataset
+        driver(config)
+        print(f"Finished processing dataset: {dataset} ----------------------\n\n")
+    # driver(config)
