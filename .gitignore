@@ -8,6 +8,7 @@ save_*/
 wordvec/
 model/
 result/
+log/
 cuda*
 *.txt
 *.log
