@@ -51,35 +51,35 @@ def driver(config):
     #                           label_dict,
     #                           f"./{config['path']['json_folder']}/{config['path']['dataset']}")
     
-    # print("Binning data ...")
+    print("Binning data ...")
     
-    # ChiMerge.chimerge(config['path']['dataset'],
-    #                   config['path']['json_folder'],
-    #                   config['path']['bins_folder'],
-    #                   ip_attr_names,
-    #                   port_attr_names,
-    #                   sery_attr_names,
-    #                   config['model_paras']['max_seq_len'],
-    #                   param_dicts)
-    # baseline.basemerge(config['path']['dataset'],
-    #                     config['path']['json_folder'],
-    #                     config['path']['bins_folder'],
-    #                     ip_attr_names,
-    #                     port_attr_names,
-    #                     sery_attr_names,
-    #                     config['model_paras']['max_seq_len'],
-    #                     param_dicts)
+    ChiMerge.chimerge(config['path']['dataset'],
+                      config['path']['json_folder'],
+                      config['path']['bins_folder'],
+                      ip_attr_names,
+                      port_attr_names,
+                      sery_attr_names,
+                      config['model_paras']['max_seq_len'],
+                      param_dicts)
+    baseline.basemerge(config['path']['dataset'],
+                        config['path']['json_folder'],
+                        config['path']['bins_folder'],
+                        ip_attr_names,
+                        port_attr_names,
+                        sery_attr_names,
+                        config['model_paras']['max_seq_len'],
+                        param_dicts)
     
-    # print("Training model ...")
+    print("Training model ...")
     
-    # model_train.model_train(label_dict, 
-    #                   config['path']['dataset'], 
-    #                   config['path']['json_folder'],
-    #                   config['path']['bins_folder'],
-    #                   config['path']['model_folder'],
-    #                   port_attr_names + ip_attr_names,
-    #                   sery_attr_names,
-    #                   config['model_paras'])
+    model_train.model_train(label_dict, 
+                      config['path']['dataset'], 
+                      config['path']['json_folder'],
+                      config['path']['bins_folder'],
+                      config['path']['model_folder'],
+                      port_attr_names + ip_attr_names,
+                      sery_attr_names,
+                      config['model_paras'])
     
     print("Choosing best model ...")
     model_id = check_bestmodel.check_models(label_dict,
@@ -118,7 +118,7 @@ def read_config():
 if __name__ == "__main__":
     config = read_config()
     DATASETS = [
-        "iscx_1", "ssrc_1"
+        "iscx_3", "ssrc_3"
     ]
     for dataset in DATASETS:
         print(f"Begin processing dataset: {dataset} ----------------------\n\n")

@@ -12,7 +12,7 @@
         "batch_size": 64,
         "epoch": 1000,
         "checkpoint": 100, 
-        "expand_times": 9
+        "expand_times": 4
     },
     "attributes":{
         "sery_attribute": {

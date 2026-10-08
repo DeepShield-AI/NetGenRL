@@ -4,7 +4,7 @@ import torch.nn.functional as F
 import json
 from torch.utils.data import DataLoader
 from torch import nn
-from stateFormer.transformer import TransGenerator
+from stateFormer.newTransformer import TransGenerator
 from stateFormer.dataset import CustomDataset
 import time
 
