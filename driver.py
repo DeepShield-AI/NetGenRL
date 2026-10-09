@@ -117,12 +117,12 @@ def read_config():
 
 if __name__ == "__main__":
     config = read_config()
-    DATASETS = [
-        "iscx_3", "ssrc_3"
-    ]
-    for dataset in DATASETS:
-        print(f"Begin processing dataset: {dataset} ----------------------\n\n")
-        config['path']['dataset'] = dataset
-        driver(config)
-        print(f"Finished processing dataset: {dataset} ----------------------\n\n")
-    # driver(config)
+    # DATASETS = [
+    #     "iscx_3", "ssrc_3"
+    # ]
+    # for dataset in DATASETS:
+    #     print(f"Begin processing dataset: {dataset} ----------------------\n\n")
+    #     config['path']['dataset'] = dataset
+    #     driver(config)
+    #     print(f"Finished processing dataset: {dataset} ----------------------\n\n")
+    driver(config)
