@@ -61,14 +61,14 @@ def driver(config):
                       sery_attr_names,
                       config['model_paras']['max_seq_len'],
                       param_dicts)
-    baseline.basemerge(config['path']['dataset'],
-                        config['path']['json_folder'],
-                        config['path']['bins_folder'],
-                        ip_attr_names,
-                        port_attr_names,
-                        sery_attr_names,
-                        config['model_paras']['max_seq_len'],
-                        param_dicts)
+    # baseline.basemerge(config['path']['dataset'],
+    #                     config['path']['json_folder'],
+    #                     config['path']['bins_folder'],
+    #                     ip_attr_names,
+    #                     port_attr_names,
+    #                     sery_attr_names,
+    #                     config['model_paras']['max_seq_len'],
+    #                     param_dicts)
     
     print("Training model ...")
     
