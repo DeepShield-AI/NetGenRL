@@ -36,12 +36,17 @@ def transformer_train(generator, dataloader, epochs, device, model_path, checkpo
             count = 0
             
             g_loss = 0.0
-            for j, x_len in enumerate(x_list):
-                loss = F.nll_loss(fake_preds[:,:,count:count+x_len].view(-1,x_len), target[:,:,j].view(-1),reduction='none')
+            for j, output_size in enumerate(generator.output_sizes):
+                safe_target = target[:, :, j].masked_fill(~mask, 1)
+                loss = F.nll_loss(
+                    fake_preds[:, :, count:count+output_size].view(-1, output_size),
+                    safe_target.view(-1),
+                    reduction='none',
+                )
                 loss = loss.view(batch_size, seq_len)  # (batch_size, seq_len)
                 loss = loss * mask * weights
                 g_loss += loss.sum()
-                count += x_len
+                count += output_size
                 
             g_loss = g_loss/len(x_list)
             gen_optimizer.zero_grad()

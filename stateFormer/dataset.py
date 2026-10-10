@@ -44,11 +44,11 @@ class CustomDataset(Dataset):
         def find_interval(value, intervals):
             for idx, [start, end] in enumerate(intervals):
                 if start <= round(value,2) <= end:
-                    return idx 
+                    return idx + 1
             if round(value,2) > intervals[-1][1]:
-                return len(intervals) - 1
+                return len(intervals)
             if round(value,2) < intervals[0][0]:
-                return 0
+                return 1
             print(f"Value {value} not found in any interval.")
             return None
             

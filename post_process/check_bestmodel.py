@@ -9,6 +9,17 @@ from torch.utils.data import DataLoader, Dataset
 import os
 import ot
 
+
+def decode_generated_bin_id(attr_id, intervals):
+    """Convert a model-space ID (1..N) to the original bins index (0..N-1)."""
+    bin_index = int(attr_id) - 1
+    if bin_index < 0 or bin_index >= len(intervals):
+        raise ValueError(
+            f"Generated bin ID {attr_id} is outside the valid range "
+            f"1..{len(intervals)}"
+        )
+    return bin_index
+
   
 def get_real_data(data_folder, label_dict, meta_attrs, sery_attrs, bins_data, max_seq_len):
     data_dic = {}
@@ -79,10 +90,13 @@ def get_fake_data(label_dict, label_dim, real_data, label_str, generator, bins_d
         for i in range(len(seq)):
             pkt = []
             for j,attr_id in enumerate(seq[i]): 
+                bin_index = decode_generated_bin_id(
+                    attr_id, bins_data[seq_attrs[j]]['intervals']
+                )
                 if j == 0:
-                    attr = round(random.uniform(bins_data[seq_attrs[j]]['intervals'][attr_id][0], bins_data[seq_attrs[j]]['intervals'][attr_id][1]),2) / bins_data[seq_attrs[j]]['intervals'][-1][1]
+                    attr = round(random.uniform(bins_data[seq_attrs[j]]['intervals'][bin_index][0], bins_data[seq_attrs[j]]['intervals'][bin_index][1]),2) / bins_data[seq_attrs[j]]['intervals'][-1][1]
                 elif j < len(sery_attrs) or i == 0:
-                    attr = round(random.uniform(bins_data[seq_attrs[j]]['intervals'][attr_id][0], bins_data[seq_attrs[j]]['intervals'][attr_id][1])) / bins_data[seq_attrs[j]]['intervals'][-1][1]
+                    attr = round(random.uniform(bins_data[seq_attrs[j]]['intervals'][bin_index][0], bins_data[seq_attrs[j]]['intervals'][bin_index][1])) / bins_data[seq_attrs[j]]['intervals'][-1][1]
                 else:
                     attr = f_seq[0][j]
                 

@@ -11,7 +11,8 @@ class TransGenerator(nn.Module):
         self.seq_dim = seq_dim
         self.max_seq_len = max_seq_len
         self.x_list = x_list
-        self.pred_dim = sum(x_list)
+        self.output_sizes = [x_len + 1 for x_len in x_list]
+        self.pred_dim = sum(self.output_sizes)
         self.device = device
 
         # ===== 维度 =====
@@ -26,7 +27,7 @@ class TransGenerator(nn.Module):
 
         # ===== 共享 Embedding =====
         self.emb = nn.ModuleList([
-            nn.Embedding(x_len, self.embedding_dim) for x_len in x_list
+            nn.Embedding(x_len + 1, self.embedding_dim) for x_len in x_list
         ])
 
         self.pad_embedding = nn.Parameter(torch.zeros(1, self.attribute_dim))
@@ -96,9 +97,12 @@ class TransGenerator(nn.Module):
         # ===== 输出层 =====
         self.output_layer = nn.ModuleList([
             nn.Sequential(
-                nn.Linear(self.state_dim + self.noise_dim + self.attribute_dim, x_len),
+                nn.Linear(
+                    self.state_dim + self.noise_dim + self.attribute_dim,
+                    output_size,
+                ),
                 nn.Identity()
-            ) for x_len in x_list
+            ) for output_size in self.output_sizes
         ])
         
         self.softmax = nn.LogSoftmax(dim=-1)
@@ -186,6 +190,7 @@ class TransGenerator(nn.Module):
         for i in range(len(self.x_list)):
             h = torch.cat([s_t, z_t, attribute_features[i]], dim=2)
             out = self.output_layer[i](h.reshape(-1, h.shape[-1]))
+            out[:, 0] = torch.finfo(out.dtype).min
             preds.append(F.log_softmax(out, dim=-1))
 
         preds = torch.cat(preds, dim=1).view(B, S, self.pred_dim)
@@ -277,6 +282,7 @@ class TransGenerator(nn.Module):
 
         h = torch.cat([s_t, z_t, attr], dim=1)
         out = self.output_layer[dim_now](h)
+        out[:, 0] = torch.finfo(out.dtype).min
 
         return F.softmax(out, dim=-1)
 

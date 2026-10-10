@@ -3,7 +3,11 @@ import torch
 from stateFormer.transformer import TransGenerator  # 假设你有一个定义好的 Discriminator 类
 import json
 import random
-from post_process.check_bestmodel import get_real_data, SequenceDataset
+from post_process.check_bestmodel import (
+    decode_generated_bin_id,
+    get_real_data,
+    SequenceDataset,
+)
 from torch.utils.data import DataLoader
 
 def save_data(label, data, meta_attrs, sery_attrs, result_folder_name):
@@ -52,10 +56,13 @@ def get_gen_data(label_dict, label_dim, real_data, label_str, generator, bins_da
         for i in range(len(seq)):
             pkt = []
             for j,attr_id in enumerate(seq[i]): 
+                bin_index = decode_generated_bin_id(
+                    attr_id, bins_data[seq_attrs[j]]['intervals']
+                )
                 if j == 0:
-                    attr = round(random.uniform(bins_data[seq_attrs[j]]['intervals'][attr_id][0], bins_data[seq_attrs[j]]['intervals'][attr_id][1]),2)
+                    attr = round(random.uniform(bins_data[seq_attrs[j]]['intervals'][bin_index][0], bins_data[seq_attrs[j]]['intervals'][bin_index][1]),2)
                 elif j < len(sery_attrs) or i == 0:
-                    attr = round(random.uniform(bins_data[seq_attrs[j]]['intervals'][attr_id][0], bins_data[seq_attrs[j]]['intervals'][attr_id][1]))
+                    attr = round(random.uniform(bins_data[seq_attrs[j]]['intervals'][bin_index][0], bins_data[seq_attrs[j]]['intervals'][bin_index][1]))
                 else:
                     attr = f_seq[0][j]
                 
