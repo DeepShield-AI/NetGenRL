@@ -32,12 +32,18 @@ def get_real_data(data_folder, label_dict, meta_attrs, sery_attrs, bins_data, ma
             for item in json_data:
                 meta_list = []
                 for meta_attr in meta_attrs:
+                    if bins_data[meta_attr]['intervals'][-1][1] == 0:
+                        meta_list.append(0)
+                        continue
                     meta_list.append(item[meta_attr]/bins_data[meta_attr]['intervals'][-1][1])
                 count = 0
                 seq = []
                 for pkt in item['series']:
                     attr_list = []
                     for sery_attr in sery_attrs:
+                        if bins_data[sery_attr]['intervals'][-1][1] == 0:
+                            attr_list.append(0)
+                            continue
                         attr_list.append(pkt[sery_attr]/bins_data[sery_attr]['intervals'][-1][1])
                     seq.append(attr_list + meta_list)
                     # seq.append(attr_list)
@@ -94,9 +100,15 @@ def get_fake_data(label_dict, label_dim, real_data, label_str, generator, bins_d
                     attr_id, bins_data[seq_attrs[j]]['intervals']
                 )
                 if j == 0:
-                    attr = round(random.uniform(bins_data[seq_attrs[j]]['intervals'][bin_index][0], bins_data[seq_attrs[j]]['intervals'][bin_index][1]),2) / bins_data[seq_attrs[j]]['intervals'][-1][1]
+                    if bins_data[seq_attrs[j]]['intervals'][-1][1] == 0:
+                        attr = 0
+                    else:
+                        attr = round(random.uniform(bins_data[seq_attrs[j]]['intervals'][bin_index][0], bins_data[seq_attrs[j]]['intervals'][bin_index][1]),2) / bins_data[seq_attrs[j]]['intervals'][-1][1]
                 elif j < len(sery_attrs) or i == 0:
-                    attr = round(random.uniform(bins_data[seq_attrs[j]]['intervals'][bin_index][0], bins_data[seq_attrs[j]]['intervals'][bin_index][1])) / bins_data[seq_attrs[j]]['intervals'][-1][1]
+                    if bins_data[seq_attrs[j]]['intervals'][-1][1] == 0:
+                        attr = 0
+                    else:
+                        attr = round(random.uniform(bins_data[seq_attrs[j]]['intervals'][bin_index][0], bins_data[seq_attrs[j]]['intervals'][bin_index][1])) / bins_data[seq_attrs[j]]['intervals'][-1][1]
                 else:
                     attr = f_seq[0][j]
                 

@@ -1,6 +1,6 @@
 {
     "path":{
-        "dataset": "iscx_small",
+        "dataset": "utmn-train",
         "pcap_folder": "data-pcap",
         "json_folder": "data-json",
         "bins_folder": "bins",
@@ -12,7 +12,7 @@
         "batch_size": 64,
         "epoch": 1000,
         "checkpoint": 100, 
-        "expand_times": 4
+        "expand_times": 1
     },
     "attributes":{
         "sery_attribute": {

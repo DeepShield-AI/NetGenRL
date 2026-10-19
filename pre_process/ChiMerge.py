@@ -253,18 +253,6 @@ def integrate_bins(intervals_dict, min_unit, min_value):
         # print("b",i,right_id,integrated_intervals[-1])
         last_value = left_boards[i+1] - min_unit
         
-    
-    # for i,itv in enumerate(integrated_intervals):
-    #     if round(itv[0],2) > round(itv[1],2):
-    #         print("error 1:",itv)
-    #     if i == len(integrated_intervals) - 1:
-    #         continue
-    #     if round(itv[1],2) > round(integrated_intervals[i+1][0] - min_unit,2):
-    #         print("error 2:",itv,integrated_intervals[i+1])
-    
-    # print(integrated_intervals)
-    # exit(0)
-    
     return integrated_intervals
 
 def filter_bins(intervals,data_dic,min_unit,min_value,max_value):
@@ -323,11 +311,6 @@ def chimerge(dataset, json_folder, bins_folder, ip_attrs, port_attrs, sery_attrs
     # max_seq_len = 16
 
     data_dic = construct_data_dic(json_data_dic, attr_list, port_attrs, ip_attrs, sery_attrs, max_seq_len)
-    # for dic in data_dic['pkt_len']['bittorrent']:
-    #     print(dic)
-    # # print(data_dic['pkt_len']['bittorrent'])
-    # print(params_dic)
-    # exit(0)
 
     np.set_printoptions(linewidth=2000)
     

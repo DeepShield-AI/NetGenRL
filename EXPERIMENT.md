@@ -87,3 +87,128 @@
 - 唯一观察到的运行 warning 为 `pre_process/ChiMerge.py:49` 的 `RuntimeWarning: invalid value encountered in divide`；分箱流程继续完成，ChiMerge 算法未修改。
 - 最终检查：代码语法编译通过；偏移 ID 范围、padding/起始占位、模型前反向、采样和解码边界测试通过；评估与结果 JSON 检查通过。
 - 工作区未清理或回滚用户已有的 `config.json`、`visual.ipynb` 修改；`AGENT.md`、`EXPERIMENT.md` 仍为未跟踪文件。全量 `git diff --check` 仍会报告已有 `config.json` 第 14 行尾随空格，本次源代码修改未引入该问题。
+
+## 2026-10-16 MIRAGE-AppAct-2024 适配前调查
+
+### 操作与口径
+
+- 开始时确认分支为 `state-for-codex`，工作区已有 `config.json`、`pre_process/ChiMerge.py`、`visual.ipynb` 修改；均未触碰。阅读 `AGENT.md`、本记录、`pre_process/pcap_process.py`、`stateFormer/dataset.py`、`config.json`、`driver.py`、`README.md`，以当前正式数据调用链为准。保留此前“真实 bin ID 从 1 开始、0 为占位/padding”的约定。
+- 外部数据 `/data/xiaozj/MIRAGE-AppAct-2024` 只读；逐文件按行切分顶层 flow，并逐 flow 解析与计数，未一次加载全量数据；对全部 2,245 个文件完成扫描，未发现文件读取或记录解析错误。重复检查使用 flow 值的字节摘要，未将重复摘要直接当作完整重复记录。
+- 生成 `mirage_dataset_report.md`，含文件/目录规模、字段粒度与缺失、完整应用/活动/组合分布、质量问题和下一步适配方案；本阶段未转换数据、改模型或训练。
+
+### 统计结果
+
+- 文件均为 JSON：2,245 个、144,240,074,368 字节（144.240 GB），分布在 20 个一级应用目录；Zoom 中有 2 个仅含 `{}` 的空文件。
+- 原始流级记录 106,157 条，逐包时间戳元素合计 305,825,577 个。每条记录为 5 元组键映射至 `packet_data`（逐包平行数组）、`flow_features`（流级汇总）和 `flow_metadata`（标签及流级元数据）。核心逐包数组同长、无 null、5 元组有效且非空的 flow 为 106,157 条。
+- 当前模型所需的逐包 TTL 在全部记录中不存在，因此可直接满足现有八字段输入的 flow 为 **0**。逐包 `iat` 与相邻时间戳差一致；`IP_packet_bytes` 为 IP 层长度，尚不能等同于现有 Scapy `len(packet)`；`TCP_flags` 为字符串，UDP 流也带该数组，但不代表观测到 TCP flags。
+- 应用类别以 `flow_metadata.BF_label` 统计：46 个非空取值加 1 个 null；目录名与 `BF_label` 不一致的 flow 有 28,835 条。活动 `BF_activity` 缺失 24,828 条，字面 `Unknown` 4,008 条；共有 142 种应用—活动组合。缺失活动不能从 `BF_sublabel` 推断，后者为应用包名/进程子标签。详细分布见报告。
+- 流长度中位数 26 包、P90 612、P99 81,838、最大 1,665,842；按 `max_seq_len=16`，81,134 条 flow 会截断。发现相同 flow 值字节摘要 12 条；`BF_num_packets` 与时间戳数组长度不一致为 0；全量检查未发现非单调时间戳、非法 IAT、非法包长或非法方向值。`L4_raw_payload` 在 14,336 条 flow 中与时间戳数组不等长，不作为现有输入字段。
+
+### 结论与后续方案
+
+- 先确认逐包 TTL 是否能从对应原始 PCAP 经 5 元组、方向与时间戳严格匹配获取；若没有真实来源，后续需明确设计无 TTL 输入，不能填零或伪造。此项阻断当前模型的直接适配。
+- 标签任务需明确是应用、活动还是应用—活动组合；以记录内标签为准，单独处理缺失、`Unknown`、背景和系统进程。若开展适配，应逐文件/流式处理，核验方向、端口、包长度定义和 TCP flags 映射，保留原始数据只读，并评估现有训练读取端一次性加载类别 JSON 的内存问题。
+
+## 2026-10-16 MIRAGE-AppAct-2024 预处理实施
+
+### 实施与命令
+
+- 本次用户明确要求缺失数值属性以 `0` 填充，因此将源数据缺失的逐包 TTL 写为数值 `0`；这是一项有损占位，不能视作观测到的 TTL。此前调查关于“不能推断真实 TTL”的事实仍成立。
+- 新增 `pre_process/mirage_process.py`；递归读取原始 JSON，先逐文件、逐行扫描 `BF_label` 与逐包数组偏移/长度，再以种子 `20241016` 对每个记录内应用标签做全局 reservoir 抽样，每类最多 2,000 条。第二遍仅按偏移读取被选 flow 的前 300 包，避免加载完整 144 GB 数据或百万包长的整条 flow。终端与 `/data/xiaozj/mirage-json/processing.log` 同步记录日志。
+- 小规模测试：`python pre_process/mirage_process.py --input-dir /data/xiaozj/MIRAGE-AppAct-2024/Line --output-dir /tmp/mirage-test-v6 --max-flows-per-class 2 --max-packets-per-flow 300 --seed 17`；处理 1,592 条原始 flow，6 个非空类别共采样并成功转换 11 条，另 1 条缺失 `BF_label`。输出 JSON 与真实 `CustomDataset` 加载器检查通过。测试过程中依次修复脚本运行时项目模块路径、限定 `packet_data` 字段读取范围、区分 flow/包上限；最终小测试为通过版本。
+- 全量命令：`python pre_process/mirage_process.py --input-dir /data/xiaozj/MIRAGE-AppAct-2024 --output-dir /data/xiaozj/mirage-json --max-flows-per-class 2000 --max-packets-per-flow 300 --seed 20241016`。原始数据保持只读；未运行训练、未改模型或训练代码。
+
+### 全量统计与验证
+
+- 扫描 2,245 个源 JSON，原始 flow 数 **106,157**，与前次调查一致；46 个非空 `BF_label` 类别。总采样 **40,510** 条、成功 **40,510** 条、选中后转换失败 **0** 条；另有 **1** 条缺失应用标签，计为失败且未输出。写出 **2,932,009** 个包、46 个类别 JSON 文件，共 **141,246,980 字节**（约 134.7 MiB；不含日志和报告）。
+- 每类原始数、采样数、成功数、失败数、包总数、文件字节数和 MiB 见 `/data/xiaozj/mirage-json/processing_report.json` 的 `classes`；其中 `Discord` 最大，17,177,091 字节（16.381 MiB），所有类别输出数均不超过 2,000 条。
+- 自动逐类重新解析输出 JSON，检查 flow/packet 字段与数值类型、每条最多 300 包、类别上限，并对每类首末样本使用当前 `stateFormer.dataset.CustomDataset` 与既有 bins 作 8 字段加载测试；46 类均通过。报告总数与实际文件大小已复核一致，源文件读取错误为 0；`python -m py_compile pre_process/mirage_process.py` 与目标文件的 `git diff --check` 通过。
+
+### 映射与已知限制
+
+- `time` 用相邻时间戳差并按现有预处理四舍五入到 2 位小数，首包为 0；原始 `iat` 仅用于一致性检查。首包方向作为 flow 正向，逆向包长取负；逐包端口与方向逐条核验。TCP flags 字符串映射为位掩码，UDP flags 依现有预处理规则设为 0。
+- `IP_packet_bytes` 为 IP 层包长；源 JSON 没有可验证的链路层头长度，无法精确复现现有 Scapy `len(packet)`，输出 `pkt_len` 使用 IP 层包长及方向符号。该特征语义差异在后续使用时需要保留。
+- 含标点的原始应用标签为兼容加载器 `filename.split('.')[0]` 的命名逻辑，输出文件名使用可逆百分号编码，如 `com.android.networkstack` → `com%2Eandroid%2Enetworkstack.json`；原标签与文件名映射保存在处理报告中。若未来以这些类别训练，类别映射需使用编码后的文件名 stem。
+- 原始标签同时包含 `Background`、系统进程和其他应用进程，本次按用户要求保留所有非空 `BF_label`，未替用户决定排除哪些类。输出仅保存前 300 包；现有加载器在当前配置下还会截到 16 包。验证证明加载器可读取所选样本，不代表已有 ISCX bins 适合 MIRAGE 的最终训练分布；本次未生成 MIRAGE bins，也未训练。
+
+## 2026-10-16 UTMobileNet2021 Wild Test Data 适配前调查
+
+### 操作与口径
+
+- 确认当前分支为 `state-for-codex`；保留原有工作区修改。阅读 `AGENT.md`、`pre_process/pcap_process.py`、`stateFormer/dataset.py` 与既有实验记录。仅调查 `/data/xiaozj/UTMobileNet2021/Wild Test Data`，原始 CSV 只读；逐文件、逐行扫描，避免一次加载全量数据。
+- 统计原始 CSV 行作为**包记录**；只对可解析的 IPv4/TCP 或 UDP 包，在单文件内按双向五元组、无超时切分作**推定分组**。这不是源数据定义的真实 flow。行级重复检查分别使用完整行、以及忽略索引与 `frame.number` 的字段值。生成 `utmn_dataset_report.md`，未转换数据、修改模型或启动训练。
+
+### 全量统计
+
+- 目标目录无一级子目录，只有 14 个 CSV，共 **200,000,099 字节（190.735 MiB）**、**686,065 条原始包行**。13 个 CSV 有额外空索引列与 `location`，`google-drive` 文件没有。
+- **685,728** 条包具备有效 IPv4/TCP 或 UDP 核心字段（TCP 634,958、UDP 50,770）；无效 337 条，其中缺 IPv4 字段 281、协议 2 不支持 43、复合/其他核心字段异常 13。有效包推定为 **1,319 组**（TCP 801、UDP 518），组长中位数 15、P90 317、P99 9,623、最大 71,161 包。1,258 组含双向包。
+- 文件名前缀得到 14 个**候选应用**。各候选应用的有效包/推定组：facebook 21,131/46；gmail 4,374/41；google-drive 218,144/159；google-maps 56,561/64；hangout 12,924/131；hulu 85,263/213；instagram 46,281/56；messenger 1,385/42；netflix 58,846/61；pinterest 59,297/63；reddit 39,580/147；spotify 33,961/127；twitter 23,716/50；youtube 24,265/119。行内无独立应用或活动标签，故真实应用、活动及应用—活动组合的 flow 分布不可统计。
+- `frame.time`、`frame.len`、`frame.cap_len` 均无空值；`ip.src/dst/proto/ttl/len` 各缺 281 行（0.041%）。TCP 端口与 `tcp.flags.ns/fin` 各缺 51,107 行（7.449%，多为非 TCP）；UDP 端口各缺 635,129 行（92.576%，多为非 UDP）。`frame.cap_len < frame.len` 为 459,466 行（66.971%）；有效核心包的 `frame.len-ip.len` 为 16/22/18 字节三种值，对应 685,429/286/13 包。
+- 同一推定组按 CSV 行序有 750 次时间倒退（TCP 742、UDP 8）；完整行重复与忽略索引及帧号后的重复均为 0。逐包 IAT 无现成列，必须在可靠分流和排序后推导。
+
+### 结论与后续方案
+
+- 现有模型要双向 flow JSON、IPv4 整数端点、端口和协议，以及逐包 IAT、有向包长、完整 TCP flags 位掩码、TTL。源 CSV 是包级；TTL 和原始 `frame.len` 可用，但 TCP 只给 NS、FIN，不能恢复其他 flags 位。**可直接满足完整模型输入的真实 flow 为 0**；UDP 518 个推定组只是需核验的候选，不能当成已验证样本。
+- 后续先查可信原始 PCAP/字段说明以恢复完整 TCP flags、核对帧长封装语义，并制定超时与五元组复用、时间乱序处理规则；确认文件名应用标签可信度及活动标签来源后，才考虑流式适配。此次未把缺失 IP、TTL 或 TCP flags 填零或伪造；MIRAGE 预处理阶段由用户要求的 TTL=0 占位约定不用于本调查。
+
+## 2026-10-16 UTMobileNet2021 Wild Test Data 预处理实施
+
+### 脚本、口径与运行命令
+
+- 新增 `pre_process/utmn_process.py`。只读扫描目标目录内的 CSV，文件名前缀作为候选应用标签，同类文件合并输出一个 `[应用].json`。逐文件将可解析的包按双向 IPv4 五元组分组，稳定按绝对时间戳排序，同组超过 60 秒空闲间隔时切分；每个重建段保留排序后的前 300 包。输出是**按明确规则重建的 flow**，源 CSV 并无真实 flow ID 或边界。
+- 小规模测试：从 Gmail CSV 取表头与前 200 包行写入 `/tmp/utmn-smoke-input`，运行 `python pre_process/utmn_process.py --input-dir /tmp/utmn-smoke-input --output-dir /tmp/utmn-smoke-output --max-packets-per-flow 300`；200 条记录生成 13 条重建 flow，JSON 校验及 `CustomDataset` 加载通过。
+- 全量最终命令：`python pre_process/utmn_process.py --input-dir '/data/xiaozj/UTMobileNet2021/Wild Test Data' --output-dir /data/xiaozj/utmn --max-packets-per-flow 300 --idle-timeout-seconds 60`。首次在沙箱中创建指定外部输出目录时遇到只读文件系统，随后获授权重跑；最终版本为修正截断后的 `last_time` 并加入加载器验证后的复跑结果。终端日志同步写到 `/data/xiaozj/utmn/processing.log`，详细统计在 `/data/xiaozj/utmn/processing_report.json`。原始 CSV 未修改，未启动训练。
+
+### 全量结果与验证
+
+- 14 个 CSV、686,065 条原始包行；685,728 条可解析并参与分组；337 条排除，原因是无效/缺失/复合 IPv4 地址 294 条、非 TCP/UDP 的协议 2 共 43 条。1,319 个单文件双向五元组组经 187 次 60 秒空闲切分后生成 **1,506 条重建 flow**；它们不是源定义的真实 flow。按行序有 750 次组内时间倒退，输出前按时间稳定排序。保留 77,146 包；每条最多 300 包，截去 608,582 个超限包。
+- 各候选应用的“重建 flow 数 / JSON 字节数”：facebook 68/164,234；gmail 46/73,346；google-drive 174/370,050；google-maps 80/214,500；hangout 134/316,651；hulu 239/449,987；instagram 63/205,691；messenger 57/66,729；netflix 84/266,724；pinterest 73/97,501；reddit 163/804,132；spotify 141/483,593；twitter 55/72,523；youtube 129/219,025。14 个 JSON 合计 3,804,686 字节。每类原始包数、异常数及 MiB 见处理报告。
+- 最终复跑自动重新解析 14 个输出 JSON，逐条检查必需元字段、逐包字段、数值类型、非空与 300 包上限；全部通过。使用现有 `CustomDataset`、`bins/bins_iscx_small.json` 加载并逐一读取 1,506 条样本，得到 `[16,8]` 输入，加载机械兼容性通过。`python -m py_compile pre_process/utmn_process.py` 通过。
+
+### 特征映射与限制
+
+- `frame.time` 的 CDT/CST 使用 `America/Chicago` 解析；排序后相邻时间差按既有代码四舍五入到 0.01 秒，首包为 0。`frame.len` 作为有方向符号的包长；正向由重建段首包端点定义，逆向为负；真实 `ip.ttl` 保留。源有效包没有缺失 TTL，未发生 TTL=0 填补。端口和 IP 来自实际包头。
+- TCP 仅有 `tcp.flags.ns`、`tcp.flags.fin`；逐包只把实际可见位编码到 `flags`，其余未提供的位按 0 占位，**不能解释为 SYN/ACK/PSH/RST/URG 实际为 0**。本次 634,958 个 TCP 包均受此限制；UDP 的 `flags=0` 是既有预处理的“不适用”规则。现有配置 `flags` 上限为 255，若将来出现 NS=1，脚本会显式排除并计数，当前数据没有。CSV 行内也没有可核验的应用/活动标签；文件名前缀只是候选应用。`frame.len` 与现有 Scapy `len(packet)` 的链路封装等价性尚未验证。使用旧 ISCX bins 通过加载检查不表示适合 UTMN 的分箱分布，更不表示 TCP flags 语义已完整兼容。
+- 复核现有配置的 `pkt_len` 最大值为 1,500：最终保留包中 **6,932** 个 `frame.len` 超过该值，全部来自 reddit，最大 **49,220** 字节。JSON 保留原始长度及方向，不作截断或伪造；当前旧 bins 的 `CustomDataset` 对超范围值会压到边界，因此加载通过不代表包长信息被完整保留。脚本已将超限计数和最大包长写入 `processing_report.json`，并以同一全量命令最终复跑；最终 14 个 JSON 的 flow 数、包数和文件大小未变。
+
+## 2026-10-16 UTMobileNet2021 双来源合并预处理
+
+### 修改与执行
+
+- 修改 `pre_process/utmn_process.py`：`--input-dir` 可重复指定多个目录；同时识别旧目录的 `[应用]_manual_...csv` 和新增目录的 `[应用]_man-[活动]_...csv` 文件名，仍按**应用**合并成一个 JSON。各 CSV 独立执行双向五元组聚合、稳定时间排序、60 秒空闲切分及每条最多 300 包；来源分布在 `processing_report.json` 的 `sources` 和每类 `sources` 中单独保留，避免跨 CSV/来源误合并会话。新增必需 CSV 表头检查，并将 IPv6、其他非 IPv4 链路类型与真正无效 IPv4 分开统计。
+- 新增目录 `/data/xiaozj/UTMobileNet2021/Action-Specific Wild Test Data` 有 43 个 CSV、563,096,482 字节；42 个为 43 列布局，1 个缺空索引列和 `location`，均与旧来源的既有布局兼容。抽样确认 `frame.time`、`frame.len`、IPv4、端口、TTL 与 TCP NS/FIN 字段名称不变。文件名含活动文本，但 CSV 行内无可核验的活动标签，输出仍只按候选应用类别分组。
+- 双目录小样本测试各取 Gmail 200 包，共生成 32 条重建 flow（旧 13、新 19），单一 `gmail.json`、JSON 校验及 `CustomDataset` 加载通过。最终运行命令：`python pre_process/utmn_process.py --input-dir '/data/xiaozj/UTMobileNet2021/Wild Test Data' --input-dir '/data/xiaozj/UTMobileNet2021/Action-Specific Wild Test Data' --output-dir /data/xiaozj/utmn --max-packets-per-flow 300 --idle-timeout-seconds 60`。原始 CSV 只读；更新指定输出目录、`processing_report.json` 和 `processing.log`；未训练。
+
+### 来源与合并统计
+
+| 来源 | CSV | 原始包行 | 可参与重建包 | 排除行 | 重建 flow | 输出保留包 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Wild Test Data | 14 | 686,065 | 685,728 | 337 | 1,506 | 77,146 |
+| Action-Specific Wild Test Data | 43 | 2,050,305 | 1,953,067 | 97,238 | 3,551 | 166,055 |
+| 合并 | 57 | 2,736,370 | 2,638,795 | 97,575 | 5,057 | 243,201 |
+
+- 新增来源使输出增加 **3,551 条重建 flow、166,055 个保留包**，并新增 `dropbox`、`pandora`、`skype` 三个应用；合并后 17 个应用 JSON 共 12,018,070 字节。双来源单文件双向五元组组数 4,679，经 378 次空闲切分得 5,057 条重建 flow；这些是规则生成的样本，不是源数据标注的真实 flow。逐包 300 上限截去 2,395,594 包；组内原行序时间倒退 2,348 次，输出前已稳定排序。
+- 各应用的“旧来源 / 新来源 / 合并重建 flow”：dropbox 0/58/58；facebook 68/33/101；gmail 46/81/127；google-drive 174/57/231；google-maps 80/115/195；hangout 134/96/230；hulu 239/731/970；instagram 63/144/207；messenger 57/53/110；netflix 84/230/314；pandora 0/535/535；pinterest 73/139/212；reddit 163/417/580；skype 0/177/177；spotify 141/312/453；twitter 55/186/241；youtube 129/187/316。各应用原始/保留包和排除行的来源分布见 `/data/xiaozj/utmn/processing_report.json`。
+- 新增来源排除原因：IPv6 **96,316**、其他非 IPv4 链路类型 **753**、不支持的 L4 **162**、无效 IPv4 **7**，合计 97,238。旧来源对应 170/106/43/18，合计 337。新增来源部分文件以 IPv6 为主，因现有模型元字段为 IPv4 整数而不能可靠纳入；例如新增 Pinterest 的 48,459 行中有 44,656 个 IPv6 帧。
+
+### 验证与保留限制
+
+- 最终复跑自动解析 17 个 JSON，逐 flow 和逐包检查 schema、数值类型、非空 `series`、300 包上限；全部通过。现有 `CustomDataset` 使用 `bins/bins_iscx_small.json` 逐一读取全部 **5,057** 条，输入形状为 `[16,8]`。报告中的来源合计、类别合计、输出文件字节数与实际文件已核对一致；脚本语法编译及目标文件 `git diff --check` 通过。
+- TCP 仍仅有 NS、FIN，可见位被编码，其余缺失位写 0 占位；输出不能视为完整 TCP flags。新增来源有 1,512,844 个受此限制的 TCP 包，合并为 2,147,802 个。保留包中 15,775 个帧长超过当前配置 `pkt_len` 上限 1,500；旧 ISCX bins 加载通过只证明接口可读，不证明特征无损或适合 UTMN。IPv6 未被伪造为 IPv4，原始文件未修改。
+
+## 2026-10-16 UTMN 从 CSV 重新生成与 CPU 兼容性复核
+
+- 按本次要求检查 `ChiMerge.py`、`CustomDataset` 和既有 `data-json/iscx_small/youtube.json`：训练目录必须只含类别 JSON；每个文件顶层为 flow 列表，flow 含 `last_time`、`series` 与五个整数元字段，逐包含 `time`、`pkt_len`、`flags`、`ttl`。`ChiMerge.py:305-307` 会对训练目录中**每个文件**直接执行 `json.load`。当前 `config.json` 实际读取 `data-json/utmn`，而指定重建输出是 `/data/xiaozj/utmn`；项目目录中旧 `processing.log` 会触发 `Extra data: line 1 column 5`，旧 `processing_report.json` 虽是合法 JSON 但不是 flow 列表。
+- 检查两个原始 CSV 来源的全部 57 个表头：均只有 `ip.src`、`ip.dst`，没有 IPv6 地址列。抽样 IPv6 帧的 `ip.src/dst` 为空；因此无法获取 128 位地址，更无法可靠截取后 32 位。继续将这类记录按 `unsupported_ipv6` 排除并明确计数，不伪造 IP。两个来源共排除 IPv6 96,486 行（旧 170、新 96,316）。本次未修改任何原始 CSV。
+- 修改 `pre_process/utmn_process.py`：增加可指定的 `--artifacts-dir`，日志和统计报告只能放在训练 JSON 目录外；在报告中说明 IPv6 转换无原始地址可用。使用 `--input-dir` 两次从两个原始目录全量重建，临时输出 `/tmp/utmn-rebuild-stage-20261016`，临时报告和日志 `/tmp/utmn-rebuild-artifacts-20261016`；保留原双向五元组聚合、稳定时间排序、60 秒空闲切分及每 flow 最多 300 包规则。
+- 临时目录含且仅含 17 个类别 JSON，合计 5,057 条重建 flow、243,201 个保留包；来源分别为 Wild Test Data 1,506 flow / 77,146 包、Action-Specific Wild Test Data 3,551 flow / 166,055 包。原始包 2,736,370，参与重建 2,638,795，排除 97,575。各应用数量与前次全量统计一致，未发现重建导致额外丢样；详细分布见处理报告。
+- CPU 验证在隔离目录调用**原有** `ChiMerge.chimerge()` 成功生成 `bins_utmn.json`，随后原有 `CustomDataset` 以这些临时分箱逐一读取全部 5,057 个样本，形状 `[16,8]`。首次误用系统 Python 遇 NumPy/SciPy 二进制版本冲突；改用项目 `exp` 环境且设置 `CUDA_VISIBLE_DEVICES=-1` 后通过。ChiMerge 仍有既有 `invalid value encountered in divide` warning，未修改算法。未运行 `driver.py` 或任何 CUDA/GPU 计算。
+- 验证后将旧 `/data/xiaozj/utmn` 完整备份到 `/data/xiaozj/utmn-backup-before-rebuild-20261016`，校验临时与待替换 JSON 的 SHA-256 一致后替换正式目录；日志和报告复制到 `/data/xiaozj/utmn-processing-artifacts-20261016`。正式目录仅有 17 个类别 JSON，合计 12,018,070 字节，再次由 `CustomDataset` 在 CPU 上逐一读取全部 5,057 条。
+- **当前配置尚不能直接训练这份新输出**：`config.json` 仍指向项目内 `data-json/utmn`，其中仍有旧日志和报告。为遵守物理 GPU 0 现有训练任务不可受干扰的约束，本次没有改配置、移动项目内训练目录或启动训练；后续应在现有任务结束后，备份该目录并使配置指向经过验证的纯类别 JSON。TCP flags 仅 NS/FIN、超过旧配置包长分箱上限等既有语义限制仍保留。
+
+## 2026-10-18 按类别随机划分 JSON 数据集
+
+- 新增 `pre_process/split_dataset.py`，输入限定为 `data-json` 下的一个直接子目录。项目类别文件顶层是 flow 列表；抽查 `data-json/mirage` 的类别文件与现有模型 `series` 结构一致。脚本逐类别检查顶层列表及模型所需元字段、逐包字段，按源 flow **索引**随机打乱，每类按约 4:1 划分；固定种子和类别文件名共同决定随机顺序，重跑结果可复现。内容相同的 flow 仍作为不同源记录独立随机抽样，不按内容去重或强制放在同一侧。
+- 类别仅有 1 条时放入训练、测试为空；2 条及以上时测试至少 1 条、训练至少 1 条。输出到同级 `<数据集名>-train`、`<数据集名>-test`，保持类别文件名和 flow JSON 结构。先在临时目录写入、重新解析并按源索引验证互斥和完整覆盖，再公布输出；若目标目录已存在，拒绝覆盖。原始数据不修改。
+- 用 1 条、2 条以及含相同内容 flow 的 5 条合成类别验证：划分分别为 1/0、1/1、4/1；计数守恒、写出重读和固定种子可复现检查通过。`python -m py_compile pre_process/split_dataset.py` 与目标文件 `git diff --check` 通过。本次仅实现脚本及临时验证，未对正式数据集执行划分，未启动训练或修改模型代码。
+- 用法：`python pre_process/split_dataset.py --input-dir data-json/mirage --seed 42`。脚本输出各类及总计的原始/训练/测试 flow 数；正式目录 `data-json/mirage-train`、`data-json/mirage-test` 仅在用户实际执行该命令时创建。
