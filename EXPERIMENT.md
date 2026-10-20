@@ -212,3 +212,59 @@
 - 类别仅有 1 条时放入训练、测试为空；2 条及以上时测试至少 1 条、训练至少 1 条。输出到同级 `<数据集名>-train`、`<数据集名>-test`，保持类别文件名和 flow JSON 结构。先在临时目录写入、重新解析并按源索引验证互斥和完整覆盖，再公布输出；若目标目录已存在，拒绝覆盖。原始数据不修改。
 - 用 1 条、2 条以及含相同内容 flow 的 5 条合成类别验证：划分分别为 1/0、1/1、4/1；计数守恒、写出重读和固定种子可复现检查通过。`python -m py_compile pre_process/split_dataset.py` 与目标文件 `git diff --check` 通过。本次仅实现脚本及临时验证，未对正式数据集执行划分，未启动训练或修改模型代码。
 - 用法：`python pre_process/split_dataset.py --input-dir data-json/mirage --seed 42`。脚本输出各类及总计的原始/训练/测试 flow 数；正式目录 `data-json/mirage-train`、`data-json/mirage-test` 仅在用户实际执行该命令时创建。
+
+## 2026-10-19 CESNET-2025-05 适配前调查
+
+- 已阅读 `AGENT.md`、`EXPERIMENT.md`、`pre_process/pcap_process.py`、`stateFormer/dataset.py`、`ChiMerge.py` 和当前 `config.json`（保留其已有用户修改；当前配置数据集为 `ssrc`）。模型契约仍是类别 JSON 顶层 flow 列表，五个整数元字段 `src_ip/src_port/dst_ip/dst_port/protocol`，逐包 `series` 字段 `time/pkt_len/flags/ttl`。
+- 原始目录 `/data/xiaozj/CESNET-2025-05` 只读；使用系统已有的匹配 NumPy 1.26.4 + PyArrow 16.1 包缓存，按 Parquet metadata 和 `iter_batches` 流式扫描，未安装依赖、未写原始目录、未转换数据或训练。目录无一级子目录，31 个 `.parquet` 日文件、31 个 row group，schema 一致；总字节 **2,178,214,834（约 2,077.31 MiB）**，总行 **15,263,858**。
+- 实际字段审计：全量均 `PROTOCOL=17/UDP`；`DST_IP_VERSION` 为 IPv4 13,592,483、IPv6 1,671,375。`DST_IP`/`DST_IP_SUBNET` 都是非空 10 位十六进制标识（不能用 IP 解析，也没有源 IP/源端口）；目的端口 147 种、范围 22--64031，其中 443 有 15,260,077 行。没有应用或活动标签列，故应用/活动/组合流分布及有效标签记录数均不可统计。
+- `PPI` 是三条等长嵌套数组（间隔、方向、长度），全量 362,031,329 个元素且无 null；间隔单位由和与 `PPI_DURATION` 核验为毫秒，方向仅 ±1，长度范围 4--1472，最大序列 30。`TIME_FIRST/TIME_LAST` 是流级时间，端点差与 `DURATION` 全量一致；`PACKETS/PACKETS_REV` 是流级包数，总和 **5,359,198,989**，不是逐包字段。`PPI_LEN < PACKETS+PACKETS_REV` 有 **7,619,676** 条，只有 7,644,182 条 PPI 完整覆盖流级包数；不能将有限 PPI 冒充完整流轨迹。
+- 质量检查：21 条 `QUIC_PACKETS` 长度与 `PPI_LEN` 不一致；5 条 `PPI_DURATION` 比 `DURATION` 多超过 30 ms；27 条完整 PPI 的方向长度与流级字节/头长交叉关系不一致。所有 Parquet 字段 null 数均为 0；SNI 为空 449,166 行、非空值 99,192 种，用户代理为空 15,249,192 行。前 31,744 行及按文件顺序前 100,000 行完整摘要均未发现重复，但未做全量精确去重。
+- 结论：按现有八字段输入契约，原始记录 15,263,858 条中可直接作为模型输入的记录为 **0**。源数据缺真实双端 IP、源端口、逐包时间戳/TTL/TCP flags 和标签，禁止通过填零、截取标识或把流级统计伪装成逐包字段适配。调查报告见 `cesnet_dataset_report.md`；建议先获取官方字段字典/外部标识映射、标签及逐包采集字段，再另行设计可审计转换方案。
+
+## 2026-10-19 CESNET 官方标签关联调查
+
+- 只读核验官方 `CESNET/cesnet-datazoo` 仓库提交 `85afe5613a9a1ea840d174d779042ee13f87b4e2`。`CESNET_QUICEXT_25` 使用 `CESNET-QUICEXT-25.h5`，HDF5 按 `/flows/DYYYYMMDD` 日期表组织；每行有 `ID`、`APP`、`CATEGORY` 等字段，`APP` enum 是逐条应用标签。`servicemap.csv` 仅按 `Tag` 映射 Service Provider/Service Category，不携带样本 ID；CATEGORY 是服务类别，不是活动标签。
+- 官方常量明确 `M-2025-5` 包含 20250501--20250531；QUICEXT-25 覆盖 2024-06 至 2025-05，原始规格约 194,296,462 条、50 个应用及 3 个背景类。官方没有单独按月 HDF5，DataZoo 会下载整年数据库后按日期表筛选；XS/S/M/L 是抽样规格。未下载整库。
+- 检查本机 `/data/xiaozj`：只有已调查的 `/data/xiaozj/CESNET-2025-05` Parquet 和同名 ZIP，没有 `CESNET-QUICEXT-25.h5`、servicemap.csv 或其他标签数据库。Parquet schema/metadata 没有 `ID`、`APP`、`CATEGORY`；RangeIndex 只是文件行索引。虽然两边可能共享目的标识、端口、协议、时间、字节/包数和 QUIC CID 等候选字段，官方未声明这些是公共唯一键，不能凭行号、时间顺序或同名日期匹配。
+- 因缺少 HDF5，尚未能验证 ID/复合键唯一性、冲突率或标签覆盖率；当前可安全关联的 Parquet 行数为 **0**，不是断言官方标签不存在。servicemap 和 enum 本身也不能给本地行赋标签。
+- 结论：**官方有 2025 年 5 月带标签数据的获取途径，但目前无法证明与已下载 Parquet 逐条对应。** 后续如取得官方 HDF5，应按同月日期表先抽取 ID/APP/CATEGORY，再用 ID 或两端唯一、字段完全相同的复合键逐条匹配并报告命中/歧义；若无可证唯一键，应直接使用官方同月 HDF5 样本，不向本地 Parquet 猜配标签。详细证据和获取限制见 `cesnet_dataset_report.md` 新增章节。
+
+## 2026-10-19 CESNET HDF5 下载成本与存储调查
+
+- 复用 DataZoo 官方仓库提交 `85afe5613a9a1ea840d174d779042ee13f87b4e2`，确认 ORIG 下载 URL 为 `https://liberouter.org/datazoo/download?bucket=cesnet-quicext-25&file=CESNET-QUICEXT-25.h5`；XS/S/M/L 文件由同一 URL 参数分别请求 `CESNET-QUICEXT-25-XS.h5`、`...-S.h5`、`...-M.h5`、`...-L.h5`。下载器按 HTTP Content-Length 分块直写，数据库是 `.h5`；`servicemap.csv` 独立下载。官方样本量 XS/S/M/L 为 10M/25M/50M/100M，ORIG 为 194,296,462。
+- 官方 DataZoo metadata API `https://zenodo.org/api/records/17249078` 返回 12 个按月 ZIP（Parquet，而非 HDF5），总压缩大小 28,186,538,748 字节。`2025-05.zip` 为 2,167,459,774 字节、MD5 `7528eab9e82ca832b6f086be7f80d6d2`；本机同名 ZIP 大小/MD5 一致，现有解压 Parquet 为 2,178,214,834 字节。该 Parquet/ZIP 无标签字段，不能与带标签 HDF5混为一份发布。
+- 官方没有公布 HDF5 或 XS/S/M/L 文件大小；liberouter 的 HEAD/流式响应分别超时或返回 503，未取得 Content-Length，也未下载正文。容量计划以五月 Parquet 的每行存储代理线性外推，并按 HDF5 为代理值 1--5 倍给范围，不将估算伪称官方大小。ORIG 规划 HDF5 约 27.7--138.7 GB，下载和筛选副本同时存在时规划约 60--278 GB；XS 约 1.4--7.2 GB，临时峰值约 3--15 GB。详见报告表格及限制。
+- `df -B1`：`/data` 可用 388,524,875,776 字节（约 362.0 GiB）；`/tmp`/根盘可用 103,654,199,296 字节（约 96.5 GiB）。本机未找到 HDF5/servicemap。官方 HDF5 内为 `/flows/DYYYYMMDD` 每日表，`M-2025-5` 是 31 个日期表的筛选配置，不能单独通过当前 DataZoo 类下载；官方 Zenodo 月度 ZIP 是 Parquet。
+- 推荐先联系维护者确认带标签的五月 HDF5/标签导出，并优先用 XS 验证官方 ID/APP/CATEGORY 与日表读取；如只有整年文件，不建议直接下载 ORIG，需先取得准确 Content-Length/校验和、规划 `/data` 下载临时文件及筛选副本余量。XS/S/M/L 的随机抽样不能保证覆盖当前 Parquet，不能拿来逐条猜配标签。全程未下载大库、未修改原始文件、未转换或训练；详细估算、三方案比较和推荐见 `cesnet_dataset_report.md` 新增章节。
+
+## 2026-10-19 CESNET-QUICEXT-25 XS HDF5 单独估算
+
+- 阅读已有 `EXPERIMENT.md` 与 `cesnet_dataset_report.md`，复用官方仓库/Zenodo 证据。仅对 `https://liberouter.org/datazoo/download?bucket=cesnet-quicext-25&file=CESNET-QUICEXT-25-XS.h5` 做**一次**流式响应头请求，读取超时 25 秒，无 Content-Length/Content-Type；未读取正文或保存文件，不再重试。官方 XS 是 10,000,000 流，文件名和 HDF5 结构可由 DataZoo 代码确认，实际文件大小/内部压缩方式仍未公开或查明。
+- 估算依据：已下载官方五月 ZIP 2,167,459,774 字节，解压 Parquet 2,178,214,834 字节/15,263,858 流，约 142.7 字节/流。线性换算 10M 流约 1.43 GB Parquet 等价体量；按 HDF5 相对密度 1--5 倍的**规划假设**，XS 下载/最终 `.h5` 占用约 **1.4--7.2 GB**，若未压缩可能超出。`.h5` 直接读取，未见另行解压要求；实际传输字节数应由未来 Content-Length 确定。
+- `df -B1 /data` 当前可用 **388,524,875,776 字节（约 361.8 GiB）**。官方断点下载器直接写目标文件，通常无需完整第二份临时文件；若另存备份需再加 1.4--7.2 GB。按日期比例 31/365 估算的五月筛选副本约 0.12--0.61 GB，另预留索引/日志/处理余量，建议为 XS 峰值留 **10 GB，稳妥留 15 GB**。这是估算，最终以 HDF5 文件大小和真实五月表大小复核。
+- 详细计算和限制已追加到 `cesnet_dataset_report.md`。本阶段未下载 HDF5、未修改原始数据或模型、未转换或训练。
+
+## 2026-10-19 CESNET XS 下载尝试
+
+- 本次用户授权下载并审计 XS。先复核 `AGENT.md`、既有报告/实验约定和官方 DataZoo URL；确认分支 `state-for-codex`，工作区已有 `config.json` 修改保持不动。`df -B1 /data` 显示可用 **388,524,875,776 字节**；指定 `/data/xiaozj/cesnet-datazoo/` 及 XS 文件在尝试前不存在。
+- 对 `https://liberouter.org/datazoo/download?bucket=cesnet-quicext-25&file=CESNET-QUICEXT-25-XS.h5` 做一次流式连接尝试，设置连接超时 8 秒、读取超时 25 秒；得到 `ReadTimeout`，未收到 Content-Length 或正文，未创建文件。鉴于前次调查已有持续超时/503，本次依用户“若持续超时或失败，记录错误并停止”约束立即停止，未重试。
+- 因未取得 HDF5，实际文件大小、校验和、完整性、日期范围/日流数、APP/CATEGORY 分布、缺失和重复 ID、属性审计及真实模型适配验证均**未执行、不能推断**。详细失败及保留的容量估算见 `cesnet_dataset_report.md` 新章节。未修改原始 Parquet、模型或配置，未转换或启动训练。
+
+## 2026-10-19 CESNET-TLS22 适配前调查
+
+- 已阅读 `AGENT.md`、`EXPERIMENT.md`、`pre_process/pcap_process.py`、`stateFormer/dataset.py` 和现有 CESNET 报告；保留用户已有 `config.json` 修改，未修改模型或训练代码。模型契约仍为双向 flow 的五个整数元字段和逐包 `time/pkt_len/flags/ttl`。
+- 原始目录 `/data/xiaozj/cesnet-tls22` 只读检查：一级周目录 `W-2021-40`、`W-2021-41`，14 个 `flows-YYYYMMDD.csv.gz`、17 个 JSON 统计文件；flow 压缩文件合计 **9,482,149,835 字节**，目录约 8.9G。日期覆盖 2021-10-04--2021-10-17，流 CSV 总行 **141,720,670**，与 `stats-dataset.json` 及每日统计 JSON 完全一致。
+- 通过 gzip CSV 分块读取审计全部 141,720,670 行。表头为 30 个字段，记录是流级统计 + PPI 有限包序列混合格式。所有 CSV 字段无空值，数值解析失败 0；`APP` 198 类、`CATEGORY` 21 类、应用—类别组合 198 种，标签缺失 0。应用标签完整计数在源目录 `stats-dataset.json`，报告列出高频/低频类别与服务类别分布。
+- 字段实测：PPI 三数组为 IPT/DIR/SIZE，累计 **2,199,133,576** 个元素，`PPI_LEN` 3--30（中位数 13、P90 30）；DIR 为 ±1、首 IPT 抽样为 0、SIZE 抽样范围 1--1460。流级包数合计约 **29,307,501,175**，中位数 25、P90 83、P99 2,244、最大 18,907,538。PPI 长度小于流级包数的记录 **141,720,226**，不能当完整包轨迹。
+- 质量：`PPI_DURATION<0` 有 2 条，`PPI_DURATION>DURATION` 有 8,768 条；PPI 时长与全流时长不同是定义差异信号，不可静默当解析错误。ID 从 0 连续递增至 141,720,669，按日文件边界连续，无非连续跳变/相邻重复；未做全量任意字段哈希去重，不能宣称无重复记录。
+- 当前模型需要的源/目的 IP、端口、L4 协议、逐包 TTL、逐包 TCP flags 均未提供；`TCP_FLAGS`/`FLAG_*` 是流级汇总或出现性字段，不能伪装成逐包 flags；PPI SIZE 是传输 payload，不等同现有 Scapy 帧长。按现有八字段契约，原始记录中直接有效记录数 **0**。详细字段表、标签分布、质量问题及适配建议见 `cesnet_tls22_dataset_report.md`。本阶段未转换、未修改原始数据、未训练。
+
+## 2026-10-19 CESNET-TLS22 分类 JSON 预处理
+
+- 新增 `pre_process/cesnet_process.py`。源目录实际是 14 个 `.csv.gz`，统计 JSON 不含待转换流；脚本流式读取 CSV，按行内 `CATEGORY` 在全部文件上做种子 42 的 reservoir 抽样，每类至多 2,000 条。输入原始文件保持只读。类别名直接用于输出文件名；空格及 `&` 被保留，文件名不含点号以适配 `CustomDataset`。
+- 小规模检查命令：`python pre_process/cesnet_process.py --input-dir /data/xiaozj/cesnet-tls22 --output-dir /tmp/cesnet-smoke-json --artifacts-dir /tmp/cesnet-smoke-artifacts --max-records 10000 --max-flows-per-class 20`。扫描 10,000 行，抽取并成功写入 389 flow；原 `CustomDataset` 在 `exp` 环境、`CUDA_VISIBLE_DEVICES=-1` 下读取 389 条、张量 `[16,8]`。
+- 全量命令：`python pre_process/cesnet_process.py --input-dir /data/xiaozj/cesnet-tls22 --output-dir /tmp/cesnet-full-stage --artifacts-dir /tmp/cesnet-full-artifacts --max-flows-per-class 2000 --max-packets-per-flow 30 --seed 42`。扫描 141,720,670 行；21 类每类抽取 2,000，选中 42,000、成功 42,000、失败 0，保留 646,807 个 PPI 包；源行格式/类别排除 0，输出合计 33,895,237 字节。逐类原始流、成功流、包数、文件字节及失败原因见 `/data/xiaozj/cesnet-processing-artifacts/processing_report.json`，终端同内容日志见同目录 `processing.log`。
+- 已将临时目录验证后的 21 个 JSON 发布至 `/data/xiaozj/cesnet-json`，日志和报告留在数据目录外。全量临时 JSON 解析、字段与长度检查通过；原 `CustomDataset` 读取 42,000 条、张量 `[16,8]`。正式目录再次复核见后续验证记录。
+- 映射限制：`PPI` 的 IPT 毫秒转换为秒并按旧代码保留两位小数；DIR 确定包长符号，SIZE 是传输层 payload 字节，**不是** `pcap_process.py` 的 `len(packet)`。源数据没有双端 IP、端口、逐包 TTL 或逐包 TCP flags，按本次要求这些 schema 字段用数值 0；流级 `TCP_FLAGS` 未冒充逐包 flags。`protocol=6` 是 TLS22 数据集级 TCP 约定，源 CSV 无逐行协议列；`last_time` 是累计 PPI IPT，非绝对时间。未抽中的 PPI 未作完整解析，异常数只对被选记录有效；源数据此前调查的负 `PPI_DURATION` 等质量问题不能据此声明消失。旧 ISCX bins 的加载成功只证明接口兼容，不能证明特征语义或分箱适合该数据。未改配置、模型或训练代码，未训练。
+- 发布后发现 URL 编码会使 `Analytics & Telemetry` 的文件 stem 与 `CATEGORY` 不一致；已调整脚本保留原类别名，并更正正式文件及报告。正式目录再次解析 21 个 JSON：42,000 flow、646,807 包；`CustomDataset` 在 CPU 上逐一读取全部 42,000 项且每项形状 `[16,8]`。`git diff --check` 与脚本语法检查通过。
