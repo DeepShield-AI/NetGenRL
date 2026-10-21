@@ -1,4 +1,5 @@
 import torch
+import time
 from torch.utils.data import DataLoader, random_split
 import argparse
 
@@ -8,9 +9,10 @@ from transformer import TrafficTransformer
 from utils import compute_loss
 from config import *
 
-def train(data_path, epochs, save_path, patience=5, min_delta=1e-4):
+def train(data_path, epochs, save_path, patience=5, min_delta=1e-4,
+          checkpoint_dir=None, checkpoint_interval=50, labels=None):
     tokenizer = ByteTokenizer()
-    ds = FlowByteDataset(data_path, LABELS, MAX_SEQ_LEN)
+    ds = FlowByteDataset(data_path, LABELS if labels is None else labels, MAX_SEQ_LEN)
 
     # ---- 自动划分 train/val ----
     val_size = max(1, int(0.1 * len(ds)))
@@ -40,6 +42,7 @@ def train(data_path, epochs, save_path, patience=5, min_delta=1e-4):
     best_path = save_path.replace(".pth", "_best.pth")
 
     for ep in range(1, epochs + 1):
+        epoch_start = time.perf_counter()
         model.train()
         total = 0
         step = 0
@@ -59,11 +62,15 @@ def train(data_path, epochs, save_path, patience=5, min_delta=1e-4):
             total += loss.item()
             step += 1
 
-            if step % 50 == 0:
-                print(f"[Train] Epoch {ep} step {step} loss={loss.item():.4f}")
+            # if step % 50 == 0:
+            #     print(f"[Train] Epoch {ep} step {step} loss={loss.item():.4f}")
 
         avg_train_loss = total / step
+        if DEVICE.startswith("cuda"):
+            torch.cuda.synchronize()
+        train_elapsed = time.perf_counter() - epoch_start
         print(f"[Train] Epoch {ep} average loss {avg_train_loss:.4f}")
+        print(f"[Train] Epoch {ep} training time {train_elapsed:.2f}s")
 
         # ----------- Validation loop -----------
         model.eval()
@@ -81,6 +88,11 @@ def train(data_path, epochs, save_path, patience=5, min_delta=1e-4):
         avg_val_loss = val_total / val_step
         print(f"[Valid] Epoch {ep} val loss = {avg_val_loss:.4f}")
 
+        if checkpoint_dir and ep % checkpoint_interval == 0:
+            checkpoint_path = f"{checkpoint_dir}/epoch_{ep}.pth"
+            torch.save({"state": model.state_dict(), "epoch": ep}, checkpoint_path)
+            print(f"[Checkpoint] Saved {checkpoint_path}")
+
         # ----------- Early Stopping 判断 -----------
         if avg_val_loss + min_delta < best_val_loss:
             best_val_loss = avg_val_loss
@@ -91,7 +103,7 @@ def train(data_path, epochs, save_path, patience=5, min_delta=1e-4):
             bad_epochs += 1
             print(f"[EarlyStopping] No improvement for {bad_epochs} epochs")
 
-        if bad_epochs >= patience:
+        if patience > 0 and bad_epochs >= patience:
             print(f"\n[EarlyStopping] Stop training at epoch {ep}. "
                   f"Best val loss = {best_val_loss:.4f}")
             break
@@ -100,6 +112,7 @@ def train(data_path, epochs, save_path, patience=5, min_delta=1e-4):
     torch.save({"state": model.state_dict()}, save_path)
     print("Final model saved:", save_path)
     print("Best model saved:", best_path)
+    return ep
 
 
 if __name__ == "__main__":
