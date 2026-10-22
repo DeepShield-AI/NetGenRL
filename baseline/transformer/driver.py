@@ -216,7 +216,6 @@ def run(args):
         checkpoint_interval=50,
         labels=labels,
     )
-    completed_epochs = 150
 
     real_for_eval = load_flows(data_dir, labels, limit=args.eval_samples)
     checkpoint_epochs = list(range(50, completed_epochs + 1, 50))

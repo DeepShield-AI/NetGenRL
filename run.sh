@@ -1,3 +1,0 @@
-CUDA_VISIBLE_DEVICES=1 python -u baseline/transformer/driver.py --data data-json/mirage-train --epochs 1000 --patience 20 2>&1 | tee ./log/mirage_train_20261021_v1.log
-CUDA_VISIBLE_DEVICES=1 python -u baseline/transformer/driver.py --data data-json/utmn --epochs 1000 --patience 20 2>&1 | tee ./log/utmn_20261021_v1.log
-CUDA_VISIBLE_DEVICES=1 python -u baseline/transformer/driver.py --data data-json/utmn-train --epochs 1000 --patience 20 2>&1 | tee ./log/utmn_train_20261021_v1.log
