@@ -10,6 +10,39 @@ import os
 import ot
 
 
+def get_compute_device():
+    """Select CUDA when available; CUDA_VISIBLE_DEVICES controls its mapping."""
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    return torch.device("cpu")
+
+
+def compute_cost_matrices(real_sequences, generated_sequences, device, max_pairwise_elements=2 * 1024 * 1024):
+    """Build the existing L2 and Hamming costs on device in bounded chunks."""
+    real = torch.as_tensor(
+        np.nan_to_num(real_sequences, nan=1), dtype=torch.float64, device=device
+    ).flatten(start_dim=1)
+    generated = torch.as_tensor(
+        np.nan_to_num(generated_sequences, nan=1), dtype=torch.float64, device=device
+    ).flatten(start_dim=1)
+
+    real_count, generated_count = real.size(0), generated.size(0)
+    feature_count = real.size(1)
+    cost_l2 = torch.empty((real_count, generated_count), dtype=torch.float64, device=device)
+    cost_hamming = torch.empty_like(cost_l2)
+    # Bound the temporary [chunk, generated, feature] tensors while retaining
+    # the same pairwise calculations as the original NumPy implementation.
+    rows_per_chunk = max(1, max_pairwise_elements // max(1, generated_count * feature_count))
+    for start in range(0, real_count, rows_per_chunk):
+        end = min(start + rows_per_chunk, real_count)
+        delta = real[start:end, None, :] - generated[None, :, :]
+        cost_l2[start:end] = torch.linalg.vector_norm(delta, dim=-1)
+        del delta
+        cost_hamming[start:end] = (real[start:end, None, :] != generated[None, :, :]).sum(dim=-1)
+
+    return cost_l2.cpu().numpy(), cost_hamming.cpu().numpy()
+
+
 def decode_generated_bin_id(attr_id, intervals):
     """Convert a model-space ID (1..N) to the original bins index (0..N-1)."""
     bin_index = int(attr_id) - 1
@@ -61,7 +94,7 @@ class SequenceDataset(Dataset):
         self.datas = datas
         self.lengths = [len(seq) for seq in datas]  # 提取序列长度
         label_id = label_dict[label_str]
-        self.label_one_hot = torch.zeros(label_dim).to('cpu') 
+        self.label_one_hot = torch.zeros(label_dim)
         self.label_one_hot[label_id] = 1
 
     def __len__(self):
@@ -70,15 +103,16 @@ class SequenceDataset(Dataset):
     def __getitem__(self, idx):
         return self.lengths[idx],self.label_one_hot
     
-def get_fake_data(label_dict, label_dim, real_data, label_str, generator, bins_data, sery_attrs, meta_attrs, batch_size):
+def get_fake_data(label_dict, label_dim, real_data, label_str, generator, bins_data, sery_attrs, meta_attrs, batch_size, device=None):
     seq_attrs = sery_attrs + meta_attrs
     dataset = SequenceDataset(real_data,label_str,label_dict,label_dim)
     dataloader = DataLoader(dataset, batch_size, shuffle=False)
     generated_sequences = []
+    device = device or next(generator.parameters()).device
     with torch.no_grad():
         for lengths, labels in dataloader:
-            lengths = lengths.to(torch.device("cpu"))  # 确保在同一个设备上
-            labels = labels.to(torch.device("cpu"))
+            lengths = lengths.to(device)
+            labels = labels.to(device)
             # print(lengths.shape)
             # print(labels.shape)
             batch_size = lengths.size(0)
@@ -88,7 +122,7 @@ def get_fake_data(label_dict, label_dim, real_data, label_str, generator, bins_d
             fake_data = generator.sample(batch_size,labels,lengths)
             # 将生成结果按序列长度截断
             for i, length in enumerate(lengths):
-                generated_sequences.append(fake_data[i, :length].cpu().tolist())
+                generated_sequences.append(fake_data[i, :int(length.item())].cpu().tolist())
        
     final_seqs = []         
     for seq in generated_sequences:
@@ -130,6 +164,8 @@ def check_models(label_dict, dataset, json_folder, bins_folder, model_folder, me
     data_folder = f'./{json_folder}/{dataset}/'
     bins_file_name = f'./{bins_folder}/bins_{dataset}.json'
     seq_dim = len(meta_attrs) + len(sery_attrs)
+    device = get_compute_device()
+    print(f"Post-process device: {device}")
 
     bins_data = {}
     with open(bins_file_name, 'r') as f_bin:
@@ -145,14 +181,14 @@ def check_models(label_dict, dataset, json_folder, bins_folder, model_folder, me
         model_name = save_folder + f'generator_{model_id}.pth'
         # model_name = save_folder + f'generator_pre.pth'
         
-        generator = TransGenerator(label_dim,seq_dim,max_seq_len,x_list,'cpu')
-        checkpoint = torch.load(model_name, map_location=torch.device('cpu'))  # 加载保存的权重字典
+        generator = TransGenerator(label_dim,seq_dim,max_seq_len,x_list,device).to(device)
+        checkpoint = torch.load(model_name, map_location=device)  # 加载保存的权重字典
         generator.load_state_dict(checkpoint)  # 将权重字典加载到模型中
         generator.eval()
         
         fake_datas = {}
         for label, data in real_datas.items():
-            fake_data = get_fake_data(label_dict,label_dim,data,label,generator,bins_data,sery_attrs,meta_attrs,batch_size)
+            fake_data = get_fake_data(label_dict,label_dim,data,label,generator,bins_data,sery_attrs,meta_attrs,batch_size,device)
             fake_datas[label] = fake_data
             
         ot_sum = 0
@@ -163,18 +199,9 @@ def check_models(label_dict, dataset, json_folder, bins_folder, model_folder, me
             real_sequences = np.array([pad(seq, max_seq_len) for seq in real_data])         # Shape: (num_samples, seq_len, num_dims)
             generated_sequences = np.array([pad(seq, max_seq_len) for seq in fake_data]) 
 
-            X = real_sequences
-            Y = generated_sequences
-        
-            X_filled = np.nan_to_num(X, nan=1)  # 或者 nan=0，如果认为0不影响
-            Y_filled = np.nan_to_num(Y, nan=1)
-    
-            cost_matrix = np.linalg.norm(X_filled[:, None, :, :] - Y_filled[None, :, :, :], axis=(-2, -1))
-            cost_matrix_ham = np.zeros((X_filled.shape[0], Y_filled.shape[0]))
-            for i in range(X_filled.shape[0]):
-                for j in range(Y_filled.shape[0]):
-                    hamming_distance = np.sum(X_filled[i] != Y_filled[j])
-                    cost_matrix_ham[i, j] = hamming_distance
+            cost_matrix, cost_matrix_ham = compute_cost_matrices(
+                real_sequences, generated_sequences, device
+            )
         
             ot_distance = ot.emd2([], [], cost_matrix) 
             hm_distance = ot.emd2([], [], cost_matrix_ham) 

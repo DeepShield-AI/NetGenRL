@@ -2,18 +2,40 @@ import torch
 import torch.optim as optim
 import torch.nn.functional as F
 import json
+import os
+import re
 from torch.utils.data import DataLoader
 from torch import nn
 from stateFormer.transformer import TransGenerator
 from stateFormer.dataset import CustomDataset
 import time
 
-def transformer_train(generator, dataloader, epochs, device, model_path, checkpoint):
+_CHECKPOINT_RE = re.compile(r"^generator_(\d+)\.pth$")
+
+
+def find_latest_checkpoint(model_path):
+    """Return the newest numbered generator checkpoint and its epoch."""
+    if not os.path.isdir(model_path):
+        return None, 0
+
+    checkpoints = []
+    for filename in os.listdir(model_path):
+        match = _CHECKPOINT_RE.match(filename)
+        if match:
+            checkpoints.append((int(match.group(1)), os.path.join(model_path, filename)))
+
+    if not checkpoints:
+        return None, 0
+    epoch, path = max(checkpoints, key=lambda item: item[0])
+    return path, epoch
+
+
+def transformer_train(generator, dataloader, epochs, device, model_path, checkpoint, start_epoch=0):
     # train generator
     gen_optimizer = optim.Adam(generator.parameters(),lr=0.0001, betas=(0.5, 0.999))
     x_list = generator.x_list
     
-    for epoch in range(epochs):
+    for epoch in range(start_epoch, epochs):
         start = time.perf_counter()
         for i, (seqs, labels, lengths, weights) in enumerate(dataloader):
             batch_size = seqs.size(0)
@@ -59,7 +81,7 @@ def transformer_train(generator, dataloader, epochs, device, model_path, checkpo
 
         torch.save(generator.state_dict(), f'{model_path}generator.pth')
         
-        if (epoch + 1) % checkpoint == 0:
+        if checkpoint > 0 and (epoch + 1) % checkpoint == 0:
             torch.save(generator.state_dict(), f'{model_path}generator_{epoch+1}.pth')
 
 # %%
@@ -77,6 +99,7 @@ def model_train(label_dict, dataset, json_folder, bins_folder, model_folder,
     data_folder = f'./{json_folder}/{dataset}/'
     bins_file_name = f'./{bins_folder}/bins_{dataset}.json'
     model_folder_name = f'./{model_folder}/{dataset}/'
+    os.makedirs(model_folder_name, exist_ok=True)
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     with open(bins_file_name, 'r') as f_bin:
@@ -89,6 +112,18 @@ def model_train(label_dict, dataset, json_folder, bins_folder, model_folder,
     
     generator.to(device)
 
+    checkpoint_path, start_epoch = find_latest_checkpoint(model_folder_name)
+    if checkpoint_path is not None:
+        print(f"Resuming from checkpoint {checkpoint_path} (epoch {start_epoch}).")
+        checkpoint_state = torch.load(checkpoint_path, map_location=device)
+        # Keep compatibility with both the current state_dict format and a
+        # possible future wrapper containing a model_state_dict.
+        if isinstance(checkpoint_state, dict) and 'model_state_dict' in checkpoint_state:
+            checkpoint_state = checkpoint_state['model_state_dict']
+        generator.load_state_dict(checkpoint_state)
+    else:
+        print("No numbered checkpoint found; starting from epoch 0.")
+
     print(device)
 
     print("Process dataset...")
@@ -97,4 +132,8 @@ def model_train(label_dict, dataset, json_folder, bins_folder, model_folder,
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
     print("Trainning...")
-    transformer_train(generator,dataloader,epochs,device,model_folder_name,checkpoint)
+    if start_epoch >= epochs:
+        print(f"Checkpoint epoch {start_epoch} already reaches configured total epochs {epochs}; skipping training.")
+        return
+
+    transformer_train(generator,dataloader,epochs,device,model_folder_name,checkpoint,start_epoch)

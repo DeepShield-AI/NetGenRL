@@ -6,6 +6,7 @@ import random
 from post_process.check_bestmodel import (
     decode_generated_bin_id,
     get_real_data,
+    get_compute_device,
     SequenceDataset,
 )
 from torch.utils.data import DataLoader
@@ -30,15 +31,16 @@ def save_data(label, data, meta_attrs, sery_attrs, result_folder_name):
         
     print(f"Save data to {result_folder_name + label + '.json'}")
 
-def get_gen_data(label_dict, label_dim, real_data, label_str, generator, bins_data, sery_attrs, meta_attrs, batch_size):
+def get_gen_data(label_dict, label_dim, real_data, label_str, generator, bins_data, sery_attrs, meta_attrs, batch_size, device=None):
     seq_attrs = sery_attrs + meta_attrs
     dataset = SequenceDataset(real_data,label_str,label_dict,label_dim)
     dataloader = DataLoader(dataset, batch_size, shuffle=False)
     generated_sequences = []
+    device = device or next(generator.parameters()).device
     with torch.no_grad():
         for lengths, labels in dataloader:
-            lengths = lengths.to(torch.device("cpu"))  # 确保在同一个设备上
-            labels = labels.to(torch.device("cpu"))
+            lengths = lengths.to(device)
+            labels = labels.to(device)
             # print(lengths.shape)
             # print(labels.shape)
             batch_size = lengths.size(0)
@@ -48,7 +50,7 @@ def get_gen_data(label_dict, label_dim, real_data, label_str, generator, bins_da
             fake_data = generator.sample(batch_size,labels,lengths)
             # 将生成结果按序列长度截断
             for i, length in enumerate(lengths):
-                generated_sequences.append(fake_data[i, :length].cpu().tolist())
+                generated_sequences.append(fake_data[i, :int(length.item())].cpu().tolist())
        
     final_seqs = []         
     for seq in generated_sequences:
@@ -78,6 +80,8 @@ def generate_data(label_dict, dataset, json_folder, bins_folder, model_folder, r
     bins_file_name = f'./{bins_folder}/bins_{dataset}.json'
     result_folder_name = f'./{result_folder}/{dataset}/'
     seq_dim = len(meta_attrs) + len(sery_attrs)
+    device = get_compute_device()
+    print(f"Post-process device: {device}")
 
     bins_data = {}
     with open(bins_file_name, 'r') as f_bin:
@@ -89,18 +93,18 @@ def generate_data(label_dict, dataset, json_folder, bins_folder, model_folder, r
     model_name = save_folder + f'generator_{model_id}.pth'
     # model_name = save_folder + f'generator.pth'
         
-    generator = TransGenerator(label_dim,seq_dim,max_seq_len,x_list,'cpu')
-    checkpoint = torch.load(model_name, map_location=torch.device('cpu'))  # 加载保存的权重字典
+    generator = TransGenerator(label_dim,seq_dim,max_seq_len,x_list,device).to(device)
+    checkpoint = torch.load(model_name, map_location=device)  # 加载保存的权重字典
     generator.load_state_dict(checkpoint)  # 将权重字典加载到模型中
     generator.eval()
         
     fake_datas = {}
     # times = 20
     for label, data in real_datas.items():
-        fake_data = get_gen_data(label_dict,label_dim,data,label,generator,bins_data,sery_attrs,meta_attrs,batch_size)
+        fake_data = get_gen_data(label_dict,label_dim,data,label,generator,bins_data,sery_attrs,meta_attrs,batch_size,device)
         fake_datas[label] = fake_data
         for _ in range(expand_times):
-            fake_datas[label] += get_gen_data(label_dict,label_dim,data,label,generator,bins_data,sery_attrs,meta_attrs,batch_size)
+            fake_datas[label] += get_gen_data(label_dict,label_dim,data,label,generator,bins_data,sery_attrs,meta_attrs,batch_size,device)
             
         print("Generate data of", label)
     
