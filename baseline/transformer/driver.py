@@ -6,7 +6,6 @@ import os
 import sys
 
 import numpy as np
-import ot
 import torch
 
 from config import (DEVICE, MAX_SEQ_LEN, EMBED_DIM, NUM_HEADS,
@@ -54,46 +53,6 @@ def load_flows(data_dir, labels, limit=None):
             flows = json.load(stream)
         flows_by_label[label] = flows[:limit] if limit else flows
     return flows_by_label
-
-
-def flow_to_metric_sequence(flow, max_seq_len):
-    """Match check_bestmodel's normalized [series, metadata] representation."""
-    meta = [flow[name] for name in META_ATTRS]
-    sequence = []
-    for packet in flow["series"][:max_seq_len]:
-        sequence.append([packet[name] for name in SERIES_ATTRS] + meta)
-    return sequence
-
-
-def normalized_metric_data(flows, bins, max_seq_len):
-    result = []
-    for flow in flows:
-        sequence = flow_to_metric_sequence(flow, max_seq_len)
-        for col, name in enumerate(SERIES_ATTRS + META_ATTRS):
-            scale = bins[name]["intervals"][-1][1]
-            for row in sequence:
-                if scale == 0:
-                    row[col] = 0.0
-                    continue
-                row[col] /= scale
-        result.append(sequence)
-    return result
-
-
-def padded_metric_array(sequences, max_seq_len):
-    width = len(SERIES_ATTRS) + len(META_ATTRS)
-    values = np.full((len(sequences), max_seq_len, width), np.nan, dtype=np.float64)
-    for index, sequence in enumerate(sequences):
-        if sequence:
-            values[index, :len(sequence)] = sequence[:max_seq_len]
-    return np.nan_to_num(values, nan=1.0)
-
-
-def ot_score(real_flows, generated_flows, bins, max_seq_len):
-    real = padded_metric_array(normalized_metric_data(real_flows, bins, max_seq_len), max_seq_len)
-    fake = padded_metric_array(normalized_metric_data(generated_flows, bins, max_seq_len), max_seq_len)
-    costs = np.linalg.norm(real[:, None] - fake[None, :], axis=(-2, -1))
-    return float(ot.emd2([], [], costs))
 
 
 def build_model_from_checkpoint(path):
@@ -199,15 +158,12 @@ def run(args):
     labels = discover_labels(data_dir)
     if len(labels) > 256:
         raise ValueError("Byte-token labels support at most 256 classes")
-    bins_path = args.bins or os.path.join(PROJECT_ROOT, "bins", f"bins_{dataset_name}.json")
-    with open(bins_path, "r") as stream:
-        bins = json.load(stream)
     dataset = FlowByteDataset(data_dir, labels, MAX_SEQ_LEN)
     if len(dataset) < 2:
         raise ValueError(f"Need at least two usable flows; found {len(dataset)}")
     print(f"Training on {len(dataset)} flows using {DEVICE}")
     final_path = os.path.join(model_dir, "traffic_transformer.pth")
-    completed_epochs = train(
+    train(
         data_dir,
         args.epochs,
         final_path,
@@ -217,37 +173,11 @@ def run(args):
         labels=labels,
     )
 
-    real_for_eval = load_flows(data_dir, labels, limit=args.eval_samples)
-    checkpoint_epochs = list(range(50, completed_epochs + 1, 50))
-    if completed_epochs % 50 or not checkpoint_epochs:
-        checkpoint_epochs.append(completed_epochs)
-        last_path = os.path.join(model_dir, f"epoch_{completed_epochs}.pth")
-        torch.save(torch.load(final_path, map_location="cpu"), last_path)
-
-    best_epoch, best_score = None, float("inf")
-    scores = {}
-    for epoch in checkpoint_epochs:
-        path = os.path.join(model_dir, f"epoch_{epoch}.pth")
-        model = build_model_from_checkpoint(path)
-        epoch_score = 0.0
-        for label, real_flows in real_for_eval.items():
-            fake_flows = generate_flows(
-                model, label, labels[label], real_flows, args.batch_size,
-                args.max_packets, args.temperature, args.top_k
-            )
-            score = ot_score(real_flows, fake_flows, bins, args.max_packets)
-            print(f"epoch {epoch} {label} OT: {score:.6f}")
-            epoch_score += score
-        scores[str(epoch)] = epoch_score
-        print(f"epoch {epoch} total OT: {epoch_score:.6f}")
-        if epoch_score < best_score:
-            best_epoch, best_score = epoch, epoch_score
-
-    if best_epoch is None:
-        raise RuntimeError("No checkpoints were available for evaluation")
-    best_checkpoint = os.path.join(model_dir, f"epoch_{best_epoch}.pth")
-    with open(os.path.join(model_dir, "evaluation.json"), "w") as stream:
-        json.dump({"best_epoch": best_epoch, "best_ot": best_score, "scores": scores}, stream, indent=2)
+    # train.py saves the validation-loss minimum at this path, including when
+    # early stopping is enabled. Use it directly for final generation.
+    best_checkpoint = final_path.replace(".pth", "_best.pth")
+    if not os.path.exists(best_checkpoint):
+        raise RuntimeError(f"Best checkpoint was not created: {best_checkpoint}")
     model = build_model_from_checkpoint(best_checkpoint)
     real_for_generation = load_flows(data_dir, labels)
     for label, real_flows in real_for_generation.items():
@@ -263,15 +193,15 @@ def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data", default=os.path.join(PROJECT_ROOT, "data-json", "iscx_small"))
     parser.add_argument("--bins", default=None,
-                        help="defaults to bins/bins_<dataset>.json")
+                        help="retained for command-line compatibility; unused")
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--patience", type=int, default=0,
                         help="early-stop patience; 0 runs all requested epochs")
     parser.add_argument("--eval-samples", type=int, default=100,
-                        help="maximum real flows per label used for checkpoint OT evaluation")
+                        help="retained for command-line compatibility; unused")
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--max-packets", type=int, default=16,
-                        help="packet count cap for generation and OT, matching config.json")
+                        help="packet count cap for generation, matching config.json")
     parser.add_argument("--temperature", type=float, default=0.7)
     parser.add_argument("--top-k", type=int, default=40)
     return parser.parse_args()

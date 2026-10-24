@@ -1,0 +1,2 @@
+CUDA_VISIBLE_DEVICES=1 python -u baseline/transformer/driver.py --data data-json/cesnet3 --epochs 500 2>&1 | tee ./log/cesnet3_base_20261023_v.log
+CUDA_VISIBLE_DEVICES=1 python -u baseline/transformer/driver.py --data data-json/cesnet3-train --epochs 500 2>&1 | tee ./log/cesnet3_train_base_20261023_v1.log
