@@ -34,6 +34,7 @@ def transformer_train(generator, dataloader, epochs, device, model_path, checkpo
     # train generator
     gen_optimizer = optim.Adam(generator.parameters(),lr=0.0001, betas=(0.5, 0.999))
     x_list = generator.x_list
+    beta = 0.001  # Match commit a9f413972d782e69ea81de24c6a23e64e24c2024.
     
     for epoch in range(start_epoch, epochs):
         start = time.perf_counter()
@@ -51,13 +52,16 @@ def transformer_train(generator, dataloader, epochs, device, model_path, checkpo
             
             seqs_seed = torch.cat([zero, seqs[:,:-1,:]], dim=1) # (batch_size, seq_len, seq_dim)
             
-            fake_preds = generator.forward(labels, lengths, seqs_seed, seqs)["preds"] # (batch_size, seq_len, prob_dim)
+            generated_dict = generator.forward(labels, lengths, seqs_seed, seqs)
+            fake_preds = generated_dict["preds"] # (batch_size, seq_len, prob_dim)
+            mu = generated_dict["mu"]
+            logvar = generated_dict["logvar"]
             
             target = seqs # (batch_size, seq_len, seq_dim)
             
             count = 0
             
-            g_loss = 0.0
+            nll_loss = 0.0
             for j, output_size in enumerate(generator.output_sizes):
                 safe_target = target[:, :, j].masked_fill(~mask, 1)
                 loss = F.nll_loss(
@@ -67,17 +71,27 @@ def transformer_train(generator, dataloader, epochs, device, model_path, checkpo
                 )
                 loss = loss.view(batch_size, seq_len)  # (batch_size, seq_len)
                 loss = loss * mask * weights
-                g_loss += loss.sum()
+                nll_loss += loss.sum()
                 count += output_size
                 
-            g_loss = g_loss/len(x_list)
+            nll_loss = nll_loss / len(x_list)
+            # The reference adds KL once per field before averaging fields;
+            # computing it once here preserves the same effective coefficient.
+            kl_per_step = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp()).sum(dim=-1)  # (batch_size, seq_len)
+            kl_loss = (kl_per_step * mask * weights).sum()
+            g_loss = nll_loss + beta * kl_loss
             gen_optimizer.zero_grad()
             g_loss.backward()
             gen_optimizer.step()
             
         end = time.perf_counter()
 
-        print(f"Epoch [{epoch+1}/{epochs}], Loss: {g_loss.item()}, time cost: {end - start}.")
+        # As before, these losses describe the last batch of the epoch.
+        print(
+            f"Epoch [{epoch+1}/{epochs}], Loss: {g_loss.item()}, "
+            f"NLL: {nll_loss.item()}, KL: {kl_loss.item()}, "
+            f"beta*KL: {(beta * kl_loss).item()}, time cost: {end - start}."
+        )
 
         torch.save(generator.state_dict(), f'{model_path}generator.pth')
         

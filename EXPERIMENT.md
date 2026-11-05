@@ -268,3 +268,54 @@
 - 已将临时目录验证后的 21 个 JSON 发布至 `/data/xiaozj/cesnet-json`，日志和报告留在数据目录外。全量临时 JSON 解析、字段与长度检查通过；原 `CustomDataset` 读取 42,000 条、张量 `[16,8]`。正式目录再次复核见后续验证记录。
 - 映射限制：`PPI` 的 IPT 毫秒转换为秒并按旧代码保留两位小数；DIR 确定包长符号，SIZE 是传输层 payload 字节，**不是** `pcap_process.py` 的 `len(packet)`。源数据没有双端 IP、端口、逐包 TTL 或逐包 TCP flags，按本次要求这些 schema 字段用数值 0；流级 `TCP_FLAGS` 未冒充逐包 flags。`protocol=6` 是 TLS22 数据集级 TCP 约定，源 CSV 无逐行协议列；`last_time` 是累计 PPI IPT，非绝对时间。未抽中的 PPI 未作完整解析，异常数只对被选记录有效；源数据此前调查的负 `PPI_DURATION` 等质量问题不能据此声明消失。旧 ISCX bins 的加载成功只证明接口兼容，不能证明特征语义或分箱适合该数据。未改配置、模型或训练代码，未训练。
 - 发布后发现 URL 编码会使 `Analytics & Telemetry` 的文件 stem 与 `CATEGORY` 不一致；已调整脚本保留原类别名，并更正正式文件及报告。正式目录再次解析 21 个 JSON：42,000 flow、646,807 包；`CustomDataset` 在 CPU 上逐一读取全部 42,000 项且每项形状 `[16,8]`。`git diff --check` 与脚本语法检查通过。
+
+
+## 2026-11-05 恢复训练中的 state KL loss
+
+- 用户确认在 `state-for-codex` 分支实施；修改前工作区干净，本次未切换分支。
+- 参照 commit `a9f413972d782e69ea81de24c6a23e64e24c2024`，在 `stateFormer/model_train.py` 恢复读取 `mu/logvar` 并计算标准正态先验的 KL，系数使用该 commit 实际值 `beta=0.001`。`AGENT.md` 中的 `beta=0.1` 与该历史代码不一致，本次未修改该约定文件。
+- 损失为 `NLL字段平均 + 0.001 * KL`；KL 对 state 维求和，使用与 NLL 相同的长度 mask 和类别权重，再对 batch/timestep 求和。在字段循环外计算一次，与历史实现循环内重复加入 KL 后再除以字段数的有效系数一致。
+- 保留当前真实 ID `1..N`、特殊 ID `0`、`N+1` 输出宽度、padding target 安全替换、反分箱及 GPU 后处理和 checkpoint 续训逻辑。未修改 `transformer.py`、历史实验文件 `newTransformer.py`、数据、配置及既有实验产物。
+- 日志增加 NLL、KL 和 beta*KL，沿用最后一个 batch 的损失口径。
+- 按用户要求仅做简单语法检查：使用 `/data/xiaozj/anaconda3/envs/exp/bin/python` 对 `driver.py`、`stateFormer/*.py`、`post_process/*.py` 共 7 个文件执行内存中的 `compile(..., "exec")`，全部通过，不导入或执行模块。`git diff --check` 通过。
+- 未运行训练、采样、梯度或数值验证，未启动正式实验，未提交或 push。
+
+
+## 2026-11-05 iscx_small：恢复 KL 后的 1000 epoch 后台实验 v1
+
+- 用户授权在 `state-for-codex` 从头运行完整分箱、训练、checkpoint 选择与生成，覆盖同名输出而不续训。保留此前 KL 修复及其日志记录，未修改原始数据。
+- `config.json` 数据集改为 `iscx_small`；`max_seq_len=16`、`batch_size=64`、`epoch=1000`、`checkpoint=100`、`expand_times=1`，保持八字段输入和 ChiMerge 分箱，KL `beta=0.001`。原配置除数据集名外未调整。
+- `exp` 环境：PyTorch 2.7.1，沙箱外 CUDA 可用；物理 GPU 0 为 NVIDIA GeForce RTX 3080（10 GiB）。启动前两张 GPU 均无计算负载，选择 GPU 0。沙箱内无法访问驱动，因此 GPU 检查、导入和后台启动均通过授权的沙箱外执行完成。
+- 输入 `data-json/iscx_small/` 四类：skype 1820、spotify 137、voipbuster 919、youtube 213，共 3089 flow。输出路径：`bins/bins_iscx_small.json`、`model/iscx_small/`、`result/iscx_small/`。本次启动前这些目标均不存在；启动脚本仍包含针对这些精确路径的覆盖清理，以保证无旧编号 checkpoint 进入续训。未清理其他数据集或历史隔离实验目录。
+- 日志：`log/iscx_small_20261105_v1.log`（stdout/stderr 合并，无缓冲，启动时覆盖）；配置快照：`log/iscx_small_20261105_v1.config.json`；状态：`log/iscx_small_20261105_v1.status.json`；后台包装脚本：`log/iscx_small_20261105_v1_runner.py`。
+- 启动时间：2026-11-05T14:43:05+08:00；PID=23735，PGID=23735。使用独立 session 后台运行，终端返回后仍继续执行。日志已确认 `No numbered checkpoint found; starting from epoch 0.`、设备 `cuda`、从 Epoch 1 开始，NLL、KL 和 beta*KL 为有限值。ChiMerge 保留已有 `invalid value encountered in divide` warning，但分箱已完成。
+- 初始耗时参考：旧同数据集日志每轮约 0.76–0.83 秒；本次前两轮约 1.02/0.85 秒。预计训练约 14–17 分钟，含 checkpoint 写入、10 次选模评估与生成总计约 15–25 分钟，预计北京时间 14:58–15:08 完成；此为估计，最终以状态和日志为准。
+- 完成时包装脚本将检查 10 个编号 checkpoint（100 至 1000）、四类 JSON 的可解析性、生成计数、序列长度、包字段有限值和 1000 条有限损失日志，成功后写 `status=completed`；异常写 `status=failed`。`expand_times=1` 表示生成两轮，预期 skype 3640、spotify 274、voipbuster 1838、youtube 426，共 6178 flow。停止信号可能使状态保留在 running，需结合进程和日志判断。
+
+启动命令（已执行，重复运行会覆盖本次产物，监测时不要重跑）：
+
+```bash
+cd /home/xiaozj/cgan
+setsid -f bash -c 'exec env CUDA_VISIBLE_DEVICES=0 PYTHONUNBUFFERED=1 /data/xiaozj/anaconda3/envs/exp/bin/python -u log/iscx_small_20261105_v1_runner.py > log/iscx_small_20261105_v1.log 2>&1'
+```
+
+监测命令：
+
+```bash
+cd /home/xiaozj/cgan
+tail -f log/iscx_small_20261105_v1.log
+cat log/iscx_small_20261105_v1.status.json
+ps -p 23735 -o pid,ppid,pgid,sid,etime,stat,args
+nvidia-smi
+ls -lh model/iscx_small/generator_*.pth
+```
+
+停止命令（先核对 PID/PGID 和命令仍属于本次任务；向本次进程组发送 TERM）：
+
+```bash
+ps -p 23735 -o pid,pgid,etime,args
+kill -TERM -- -23735
+ps -p 23735 -o pid,pgid,stat,args
+```
+
+- 本记录描述启动与早期运行验证，尚不代表 1000 epoch、评估或生成已完成；未创建 commit 或 push。
