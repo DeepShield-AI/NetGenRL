@@ -317,7 +317,10 @@ class TransGenerator(nn.Module):
             for i in range(given_len):
                 input = lis[i].squeeze(1)
                 samples.append(input)
-            sam_tensor = x
+            # Prefix packets occupy the same positions as in shifted training
+            # inputs; BOS is internal history and is not part of the output.
+            bos = x.new_zeros((batch_size, 1, self.seq_dim))
+            sam_tensor = torch.cat([bos, x], dim=1)
             
             for i in range(given_len, self.max_seq_len):
                 # samples.append(sam_tensor)

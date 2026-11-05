@@ -319,3 +319,343 @@ ps -p 23735 -o pid,pgid,stat,args
 ```
 
 - 本记录描述启动与早期运行验证，尚不代表 1000 epoch、评估或生成已完成；未创建 commit 或 push。
+
+
+## 2026-11-05 双 GPU 正式实验：1000 epoch、无 expand
+
+- 用户授权覆盖同数据集既有 bins、model、result，从头训练，后台运行两条独立队列；每个数据集完整完成分箱 → 训练 → checkpoint 选择 → 生成 → 结果校验后，才进入同 GPU 的下一数据集。未切换分支，当前为 `state-for-codex`。
+- GPU 0 顺序：`utmn` → `ssrc` → `iscx` → `mirage` → `cesnet3`。
+- GPU 1 顺序：`utmn-train` → `ssrc_train` → `iscx_train` → `mirage-train` → `cesnet3-train`。用户所称 `ssrc-train`、`iscx-train` 在磁盘上的实际目录名为 `ssrc_train`、`iscx_train`，输入、输出与日志统一使用实际名称，未创建或更改原始数据目录。
+- 参数：`epoch=1000`、`checkpoint=100`、`batch_size=64`、`max_seq_len=16`、`expand_times=0`。使用当前正式八字段 Transformer、ChiMerge 和 KL `beta=0.001`；未改模型代码或 `newTransformer.py`。保留原始 JSON、用户现有 `model_train.py` 与 `visual.ipynb` 未提交修改。
+- 各任务配置独立写入 `log/formal_20261105_v1/[数据集].config.json`，不依赖随后修改的全局 `config.json`。本次没有修改全局配置。运行代码快照保存在 `log/formal_20261105_v1/source/`，覆盖 driver、训练、正式模型、预处理与后处理共 14 个 Python 文件；输入与代码 SHA-256、顺序和计数见 `manifest.json`。准备阶段解析全部类别 JSON、检查模型使用字段和非空 series，并对快照代码进行语法编译，已通过。
+- 每个任务开始前先复核输入 SHA-256 和 CUDA，再清理精确对应的 `model/[数据集]/`、`result/[数据集]/` 及 `bins/bins_[数据集].json`。因此不存在加载旧编号 checkpoint 的机会；尚未轮到的任务暂时保留旧输出，到任务开始才覆盖。其他实验目录保持原样。
+- 每个任务 stdout/stderr 写入并覆盖 `log/[数据集]_20261105_v1.log`；两条队列管理日志为 `log/formal_20261105_v1/gpu0.queue.log`、`gpu1.queue.log`。队列状态为 `gpu0.status.json`、`gpu1.status.json`；每个数据集另有 `[数据集].status.json`。数据集任务失败即停止该队列，另一队列继续，不把失败当作完成。
+- 输出：`bins/bins_[数据集].json`、`model/[数据集]/generator.pth` 及 `generator_100.pth` 至 `generator_1000.pth` 共 10 个编号 checkpoint、`result/[数据集]/[类别].json`。无 expand，生成量应等于输入量。完成阶段会核对 1000 条有限损失日志、checkpoint 编号、结果类别、JSON 可解析性、生成计数、序列长度和包字段有限值，全部通过才写 `status=completed`。
+- 启动前两张 RTX 3080 空闲，上一轮 `iscx_small` 日志已于 14:57:29 标记 COMPLETED；本次不影响该数据集产物。启动时磁盘剩余约 58.8 GiB；旧输出将按任务覆盖，不累计备份。
+
+| 数据集 | GPU | 类别数 | 输入／预期生成 flow |
+|---|---:|---:|---:|
+| utmn | 0 | 17 | 5,057 |
+| ssrc | 0 | 9 | 7,426 |
+| iscx | 0 | 10 | 6,781 |
+| mirage | 0 | 20 | 33,975 |
+| cesnet3 | 0 | 21 | 209,999 |
+| utmn-train | 1 | 17 | 4,047 |
+| ssrc_train | 1 | 9 | 5,942 |
+| iscx_train | 1 | 10 | 5,475 |
+| mirage-train | 1 | 20 | 27,180 |
+| cesnet3-train | 1 | 21 | 167,999 |
+
+启动与早期验证：
+
+- 启动时间：2026-11-05T15:38:50+08:00。
+- GPU 0：队列 PID/PGID/SID=26245，初始 worker PID=26248；GPU 1：队列 PID/PGID/SID=26246，初始 worker PID=26247。worker 随数据集更换，队列 PID/PGID 不变。两条队列均已脱离终端，PPID=1，各 worker 与对应队列共享进程组。
+- GPU 0 `utmn`、GPU 1 `utmn-train` 已完成分箱，日志均明确 `No numbered checkpoint found; starting from epoch 0.`、设备 `cuda`，NLL、KL、beta*KL 为有限值。启动后十余秒已分别记录 6/8 个 epoch；物理 GPU 0 worker=26248、GPU 1 worker=26247，两卡 GPU 利用率约 73%/68%，显存约 1070/1015 MiB。此为启动证据，不能代表整轮实验完成。
+- ChiMerge 沿用既有数值 warning，若流程未报错则继续；完整错误将记录到对应数据集日志和状态。
+
+耗时估计（不是完成承诺）：
+
+- 采用同八字段、ChiMerge 的历史日志：全量 UTMN/SSRC/ISCX 每轮约 2.30/2.00/2.03 秒，MIRAGE 33.91 秒，CESNET3 204.42 秒；相应训练集约 1.74/1.59/1.75/26.54/160.04 秒。本次开头 UTMN/UTMN-train 实测约 2.31/1.76 秒，与历史口径接近。
+- 单纯训练的历史线性估计：GPU 0 合计约 68 小时，GPU 1 约 53 小时；计入评估、生成、checkpoint 保存和负载波动，GPU 0 预计 60–80 小时，GPU 1 预计 48–65 小时，整体预计 60–80 小时（约 2.5–3.3 天）。按本次 11 月 5 日 15:38 启动，整体大致在北京时间 11 月 8 日 03:38 至 23:38 完成。
+- 六字段等宽/等频消融的耗时不用于此次八字段 ChiMerge 估计。主要耗时来自 MIRAGE/CESNET3，实际进度以当前日志和状态为准。
+
+启动命令（已执行，不要重复运行覆盖当前任务）：
+
+```bash
+cd /home/xiaozj/cgan
+setsid -f bash -c 'exec /data/xiaozj/anaconda3/envs/exp/bin/python -u log/formal_20261105_v1/run.py lane 0 > log/formal_20261105_v1/gpu0.queue.log 2>&1'
+setsid -f bash -c 'exec /data/xiaozj/anaconda3/envs/exp/bin/python -u log/formal_20261105_v1/run.py lane 1 > log/formal_20261105_v1/gpu1.queue.log 2>&1'
+```
+
+监测命令：
+
+```bash
+cd /home/xiaozj/cgan
+cat log/formal_20261105_v1/gpu0.status.json
+cat log/formal_20261105_v1/gpu1.status.json
+tail -f log/formal_20261105_v1/gpu0.queue.log log/formal_20261105_v1/gpu1.queue.log
+# 按队列状态中的 active 数据集选择日志；下列为启动时的两个任务。
+tail -f log/utmn_20261105_v1.log log/utmn-train_20261105_v1.log
+ps -p 26245,26246 -o pid,ppid,pgid,sid,etime,stat,args
+nvidia-smi
+# 查看各数据集阶段、错误和完成记录。
+cat log/formal_20261105_v1/utmn.status.json
+```
+
+停止命令（先核对命令仍为本次队列及 PGID，避免 PID 重用；停止进程组会同时停止当前 worker 和后续排队任务）：
+
+```bash
+ps -p 26245,26246 -o pid,pgid,etime,args
+# 仅停止 GPU 0 队列：
+kill -TERM -- -26245
+# 仅停止 GPU 1 队列：
+kill -TERM -- -26246
+# 或同时停止两条队列：
+kill -TERM -- -26245 -26246
+ps -p 26245,26246 -o pid,pgid,stat,args
+```
+
+- TERM 处理会尽力将队列和 worker 状态记为 stopped；强制终止可能留下 running 状态，必须结合进程与日志判断。未提交或 push。
+
+
+## 2026-11-05 停止正式队列，启动 iscx_small_new 的 beta=0.1 实验
+
+- 用户要求停止当前任务。已核实旧队列 PGID 26245/26246，先发送 TERM；训练 worker 26248/26247 已退出且 GPU 计算进程清空，但队列父进程卡在 futex 等待，随后对两个已核实进程组发送 KILL。最终 `ps` 确认四个进程均不再存在，并将两条队列状态补记为 stopped，保留所有已产生的 bins、checkpoint、日志和其他数据集输出。
+- 停止时最后记录：UTMN epoch 673、UTMN-train epoch 874；其后八个排队数据集未启动，没有继续执行新任务。旧队列不代表完成的正式实验。
+- 新实验输入仍为原始 `data-json/iscx_small/`，四类共 3089 flow。为使用统一 driver 的数据集命名机制，仅在 `log/iscx_small_new_20261105_v1/input/iscx_small_new` 创建指向该输入的符号链接；没有复制、修改或重命名原始数据。
+- 新实验输出全部隔离：`bins/iscx_small_new/bins_iscx_small_new.json`、`model/iscx_small_new/`、`result/iscx_small_new/`。启动前这些目录均不存在；脚本使用 `mkdir(exist_ok=False)`，若发现同名目录就退出，不删除或覆盖任何既有结果。日志创建也启用 shell noclobber，防止重复启动覆盖。
+- 参数沿用最近正式任务：`epoch=1000`、`batch_size=64`、`checkpoint=100`、`max_seq_len=16`、`expand_times=0`，八字段、ChiMerge、GPU 0；beta 改为 0.1。该系数仅写入独立代码快照 `log/iscx_small_new_20261105_v1/source/stateFormer/model_train.py`，主工作区训练代码仍为 beta=0.001。真实 ID/padding 修复、GPU 后处理和损失归一化方式保留。
+- 配置、代码快照及输入 SHA-256 见 `log/iscx_small_new_20261105_v1/config.json`、`source/`、`manifest.json`；启动脚本 `run.py`。快照和启动脚本语法检查通过。本次未修改全局 config、用户已有模型代码修改或 visual.ipynb。
+- stdout/stderr：`log/iscx_small_new_20261105_v1.log`；状态：`log/iscx_small_new_20261105_v1/status.json`。完成时检查 1000 条有限损失日志、10 个编号 checkpoint、结果 JSON 可解析性、包字段有限值和生成计数，成功才写 completed。
+- 后台启动：2026-11-05T16:07:33+08:00；PID/PGID=29627。预期生成 skype 1820、spotify 137、voipbuster 919、youtube 213，共 3089 flow，无 expand。
+- 根据今天先前 iscx_small 实验约 14 分钟的实际耗时，预计本次完整分箱、训练、选模和生成约 15–25 分钟，大致北京时间 16:22–16:32 完成；最终以日志和完成状态为准，启动不代表完成。
+
+启动命令（已执行，不要重复启动）：
+
+```bash
+cd /home/xiaozj/cgan
+setsid -f bash -c 'set -C; exec env CUDA_VISIBLE_DEVICES=0 PYTHONUNBUFFERED=1 /data/xiaozj/anaconda3/envs/exp/bin/python -u log/iscx_small_new_20261105_v1/run.py > log/iscx_small_new_20261105_v1.log 2>&1'
+```
+
+监测命令：
+
+```bash
+cd /home/xiaozj/cgan
+tail -f log/iscx_small_new_20261105_v1.log
+cat log/iscx_small_new_20261105_v1/status.json
+ps -p 29627 -o pid,ppid,pgid,sid,etime,stat,args
+nvidia-smi
+```
+
+停止指令（先核对 PID/PGID 和命令属于本次实验）：
+
+```bash
+ps -p 29627 -o pid,pgid,etime,args
+kill -TERM -- -29627
+ps -p 29627 -o pid,pgid,stat,args
+```
+
+- 原 `iscx_small` 和旧正式实验产物保留，未提交或 push。
+
+
+## 2026-11-05 beta 对比输出统一命名，启动 beta=0.01
+
+- 用户授权将已完成 beta=0.001 的 iscx_small 输出统一为 `iscx_small_0_001`，beta=0.1 的 iscx_small_new 输出统一为 `iscx_small_0_1`；另启动 beta=0.01 的 iscx_small 实验，输出 `iscx_small_0_01`。
+- 已确认 beta=0.1 实验于 16:21:56 完成：1000 epoch，最佳 checkpoint=700，四类共生成 3089 flow；本次启动前两张 GPU 均空闲，无须停止旧任务。
+- 已重命名 `model/iscx_small` → `model/iscx_small_0_001`、`result/iscx_small` → `result/iscx_small_0_001`；将根级 `bins/bins_iscx_small.json` 移入新建 `bins/iscx_small_0_001/`，并命名为 `bins_iscx_small_0_001.json`。
+- 已重命名 `model/iscx_small_new` → `model/iscx_small_0_1`、`result/iscx_small_new` → `result/iscx_small_0_1`、`bins/iscx_small_new` → `bins/iscx_small_0_1`；其中 bins 文件也同步改为 `bins_iscx_small_0_1.json`。
+- 所有目标命名在操作前均检查不存在；移动前后逐文件 SHA-256 校验一致，未覆盖文件。原始输入 `data-json/iscx_small`、历史日志/配置/代码快照以及 `baseline-transformer` 下独立实验保持原样；此前记录中的旧输出路径已由本节新路径替代。
+- 移动后重新解析结果：beta=0.001 为 skype 3640、spotify 274、voipbuster 1838、youtube 426，共 6178 flow（旧实验 expand_times=1）；beta=0.1 为 skype 1820、spotify 137、voipbuster 919、youtube 213，共 3089 flow（expand_times=0）。此命名变更不重跑旧实验，也不修改其数据量。
+- 新 beta=0.01 实验沿用最近一轮参数：`epoch=1000`、`batch_size=64`、`checkpoint=100`、`max_seq_len=16`、`expand_times=0`，八字段、ChiMerge、GPU 0，预期共生成 3089 flow。使用新代码快照 `log/iscx_small_0_01_20261105_v1/source/`，仅将快照内 beta 改为 0.01，主工作区训练代码仍为 0.001；全局 config 和用户其他修改保持原样。
+- 新输出：`bins/iscx_small_0_01/bins_iscx_small_0_01.json`、`model/iscx_small_0_01/`、`result/iscx_small_0_01/`；脚本拒绝已有输出目录、已有运行状态和已有日志文件，保证不覆盖历史结果。
+- 日志 `log/iscx_small_0_01_20261105_v1.log`；状态 `log/iscx_small_0_01_20261105_v1/status.json`；配置、输入/代码 SHA-256 与重命名校验记录见同目录 `config.json`、`manifest.json`。输入通过该目录 `input/iscx_small_0_01` 的符号链接只读访问原始 iscx_small，不复制或修改原始数据。
+- 新快照和启动脚本语法编译通过。已于 2026-11-05T16:31:26+08:00 后台启动，PID/PGID=30835；预计总耗时 15–25 分钟，大致北京时间 16:46–16:56 完成，最终以完成校验和日志为准。
+
+启动命令（已执行）：
+
+```bash
+cd /home/xiaozj/cgan
+setsid -f bash -c 'set -C; exec env CUDA_VISIBLE_DEVICES=0 PYTHONUNBUFFERED=1 /data/xiaozj/anaconda3/envs/exp/bin/python -u log/iscx_small_0_01_20261105_v1/run.py > log/iscx_small_0_01_20261105_v1.log 2>&1'
+```
+
+监测命令：
+
+```bash
+cd /home/xiaozj/cgan
+tail -f log/iscx_small_0_01_20261105_v1.log
+cat log/iscx_small_0_01_20261105_v1/status.json
+ps -p 30835 -o pid,ppid,pgid,sid,etime,stat,args
+nvidia-smi
+```
+
+停止命令（先确认 PID/PGID 与命令仍属于本次实验）：
+
+```bash
+ps -p 30835 -o pid,pgid,etime,args
+kill -TERM -- -30835
+ps -p 30835 -o pid,pgid,stat,args
+```
+
+- 本节记录后台启动，不代表 beta=0.01 已完成；完成后脚本会校验 1000 条有限损失日志、10 个编号 checkpoint、结果 JSON 结构和生成计数，成功才写 completed。未提交或 push。
+
+
+## 2026-11-05 iscx_small beta=0.025 / 0.05 双 GPU 并行实验
+
+- 按用户授权同时启动 beta=0.025 与 beta=0.05 两个 iscx_small 实验；输出名称分别为 `iscx_small_0_025`、`iscx_small_0_05`。不覆盖 beta=0.001/0.01/0.1 或其他既有产物，不修改原始输入。
+- 先确认 beta=0.01 实验已于 16:45:49 完成：1000 epoch、最佳 checkpoint=800、生成 3089 flow，状态为 completed；启动前两张 GPU 空闲，没有干扰其他训练任务。
+- 两个实验均保持 `epoch=1000`、`batch_size=64`、`checkpoint=100`、`max_seq_len=16`、`expand_times=0`、八字段输入、ChiMerge 及 GPU 后处理。使用与已完成 beta=0.01 实验相同的代码快照，唯一训练代码差异是 beta；主工作区 `model_train.py`、全局 config 和用户其他修改保留原状。
+- 输入均为 `data-json/iscx_small/`，skype 1820、spotify 137、voipbuster 919、youtube 213，共 3089 flow。各实验通过自己的 `input/[实验名]` 符号链接只读访问原始数据，保留输入 SHA-256、代码 SHA-256 和配置快照。两个代码快照及启动脚本语法检查已通过。
+- 每个实验均拒绝已有输出目录、状态或同名日志。完成后自动校验 1000 条有限损失日志、100至1000共10个编号 checkpoint、生成类别/计数、JSON 可解析性、序列长度与包字段有限值，全部通过才写 completed。
+
+| beta | 物理 GPU | bins 文件 | model 目录 | result 目录 |
+|---|---:|---|---|---|
+| 0.025 | 0 | `bins/iscx_small_0_025/bins_iscx_small_0_025.json` | `model/iscx_small_0_025/` | `result/iscx_small_0_025/` |
+| 0.05 | 1 | `bins/iscx_small_0_05/bins_iscx_small_0_05.json` | `model/iscx_small_0_05/` | `result/iscx_small_0_05/` |
+
+- 日志分别为 `log/iscx_small_0_025_20261105_v1.log`、`log/iscx_small_0_05_20261105_v1.log`，合并 stdout/stderr 且无缓冲。对应同名目录内保存 `run.py`、`config.json`、`manifest.json`、`status.json` 和 `source/`。
+- 启动时间：2026-11-05T16:54:35+08:00；beta=0.025 PID/PGID=32479，beta=0.05 PID/PGID=32480，均使用独立 session 后台运行。
+- 参考今天两次已完成同参数实验实际总耗时约 14分23秒，两项并行预估总墙钟耗时约15–25分钟，预计北京时间 17:09–17:19 完成。并行负载可能影响实际耗时，以日志和 completed 状态为准。
+
+启动命令（已执行，不要重复运行）：
+
+```bash
+cd /home/xiaozj/cgan
+setsid -f bash -c 'set -C; exec env CUDA_VISIBLE_DEVICES=0 PYTHONUNBUFFERED=1 /data/xiaozj/anaconda3/envs/exp/bin/python -u log/iscx_small_0_025_20261105_v1/run.py > log/iscx_small_0_025_20261105_v1.log 2>&1'
+setsid -f bash -c 'set -C; exec env CUDA_VISIBLE_DEVICES=1 PYTHONUNBUFFERED=1 /data/xiaozj/anaconda3/envs/exp/bin/python -u log/iscx_small_0_05_20261105_v1/run.py > log/iscx_small_0_05_20261105_v1.log 2>&1'
+```
+
+监测命令：
+
+```bash
+cd /home/xiaozj/cgan
+tail -f log/iscx_small_0_025_20261105_v1.log log/iscx_small_0_05_20261105_v1.log
+cat log/iscx_small_0_025_20261105_v1/status.json
+cat log/iscx_small_0_05_20261105_v1/status.json
+ps -p 32479,32480 -o pid,ppid,pgid,sid,etime,stat,args
+nvidia-smi
+```
+
+停止命令（先核对 PID/PGID 和命令仍属于本次实验）：
+
+```bash
+ps -p 32479,32480 -o pid,pgid,etime,args
+# 仅停止 beta=0.025：
+kill -TERM -- -32479
+# 仅停止 beta=0.05：
+kill -TERM -- -32480
+# 或同时停止：
+kill -TERM -- -32479 -32480
+```
+
+- 本节记录启动，并非完成结果；未创建 commit 或 push。
+
+
+## 2026-11-05 限定修复：分箱单位、频数累计与前缀续写对齐
+
+- 用户明确授权三项修改，仍在 `state-for-codex`；未切换分支。用户确认元字段“每 flow 创建一行、仅首行累计直方图”和生成流级属性与最终保存值的差异均为故意设计，不再作为本次修复目标；保留这些逻辑及其他既有设计。
+- `pre_process/ChiMerge.py`：在 `cal_bins_one_category()` 中，将物理数值区间映射为 `round(value/min_unit)` 的整数网格，再以步长1执行低频合并与 chi merge；例如0秒和0.01秒映射为0和1。合并完成后乘回 min_unit 并按原精度舍入，因此对外返回和 bins JSON 仍使用原字段单位。`chi_cal()` 补充整数网格输入约定；检验公式、自由度和阈值策略均未改。
+- 同文件 `construct_intervals_data()` 将 `tmp_dict[k][id] = v` 改为 `+= v`，对同一统计行内裁剪或舍入到相同数值的频数进行累计，保留各行独立性和计数守恒。
+- `stateFormer/transformer.py`：仅在 `sample(x=prefix)` 分支内部历史前拼接零 BOS，使用 `[BOS,prefix]` 计算后续 state；返回值仍是 prefix 加新生成包，不包含 BOS。默认从零生成、forward、get_hidden、noise 和字段生成逻辑保持原样。
+- 新增 `tests/test_binning_and_prefix.py`，8项 CPU 回归测试覆盖：双侧边界裁剪累计及顺序无关性、舍入冲突频数守恒、时间网格统计量和返回秒单位、物理单位缩放下合并结果一致、元字段布局保留、续写历史/BOS/有效 ID 和 state 与训练对应 mu 的一致性、完整前缀直接返回、默认从零生成。
+- 首次测试中一个 spy 在合并后读取了被原地修改的区间引用，造成测试断言失败；改为在调用时复制区间和计数后，8项全部通过。产品实现未为该测试问题额外修改。
+- 验证命令：`CUDA_VISIBLE_DEVICES=-1 PYTHONDONTWRITEBYTECODE=1 OPENBLAS_NUM_THREADS=1 /data/xiaozj/anaconda3/envs/exp/bin/python -m unittest discover -s tests -p 'test_binning_and_prefix.py' -v`，8项通过。对两个修改模块和测试文件执行内存语法编译通过；本次修改文件的 `git diff --check` 通过。
+- 额外用 AST 对比 HEAD 确认 `construct_data_dic/threshold_merge/chi_merge` 及 `forward/get_hidden/get_noise/step_w_hidden` 未改。原有 `model_train.py`、`visual.ipynb` 和历史 EXPERIMENT 内容的用户修改保留。
+- 本次未启动正式训练、未重建或覆盖任何既有 bins/model/result、未修改 `newTransformer.py`、GPU 后处理、beta 或全局配置。后续若采用新生成的 bins，应与对应新训练权重配套使用，历史产物继续保留原分箱定义。未 commit 或 push。
+
+
+## 2026-11-05 ChiMerge 修改前后分箱数比较：iscx_small / iscx
+
+- 按用户要求仅运行预处理分箱，不训练、不选模、不生成流量。使用 `exp` 环境 CPU，`CUDA_VISIBLE_DEVICES=-1`。
+- 修改前代码取自当前 HEAD `97b8d08a64cacf66fc268b2ab47a770ef7654224` 的 `pre_process/ChiMerge.py`，修改后取当前工作区文件；分别保存为 `log/chimerge_compare_20261105_v1/before.py`、`after.py`，未执行 checkout 或切换分支。配置快照及两版本源码 SHA-256 见同目录 `config.json`、`summary.json`。
+- 两版本使用完全相同的原始 JSON、当前八字段配置和 `max_seq_len=16`；每个数据集在两次计算前后校验输入 SHA-256 一致。元字段统计布局、检验自由度和阈值设计保留。
+- 输出隔离至 `bins/chimerge_compare_20261105_v1/before/bins_[数据集].json` 与 `after/bins_[数据集].json`，未覆盖任何已有 bins、模型或生成结果。
+
+| 属性 | iscx_small 修改前 | iscx_small 修改后 | iscx 修改前 | iscx 修改后 |
+|---|---:|---:|---:|---:|
+| time | 53 | 160 | 82 | 245 |
+| pkt_len | 340 | 340 | 554 | 554 |
+| flags | 9 | 9 | 13 | 13 |
+| ttl | 52 | 52 | 66 | 66 |
+| src_port | 95 | 95 | 235 | 235 |
+| dst_port | 46 | 46 | 77 | 77 |
+| src_ip | 16 | 16 | 29 | 29 |
+| dst_ip | 266 | 266 | 408 | 408 |
+
+- 仅 time 改变：iscx_small 53 → 160（+107），iscx 82 → 245（+163）。其余七个字段不仅分箱数相同，完整区间列表也相同。比较为网格单位修复和累计频数修复共同生效后的结果，未单独消融两项改动；分箱数增加本身不代表生成质量改善。
+- 完整结果、每版耗时、输入及代码哈希见 `log/chimerge_compare_20261105_v1/summary.json`，表格见 `summary.csv`，执行输出见 `compare.log`；旧算法的既有数值 warning 已保留于日志。
+- 执行命令：`CUDA_VISIBLE_DEVICES=-1 PYTHONDONTWRITEBYTECODE=1 OPENBLAS_NUM_THREADS=1 /data/xiaozj/anaconda3/envs/exp/bin/python -u log/chimerge_compare_20261105_v1/compare.py > log/chimerge_compare_20261105_v1/compare.log 2>&1`。进程退出码0，日志以 COMPLETED 结束。
+- 未修改模型和训练代码，未提交或 push。
+
+
+## 2026-11-05 清理分箱对比临时产物，启动 ISCX beta=0.01 / 0.025
+
+- 按用户要求清除刚才分箱数对比新增的代码和输出：删除 `log/chimerge_compare_20261105_v1/`（8个脚本、快照、日志及汇总文件）和 `bins/chimerge_compare_20261105_v1/`（4份隔离 bins）。先确认对比日志 COMPLETED，再仅删除上述两个精确目录；保留此前算法修复、8项回归测试和所有其他历史数据/实验输出。前一节的比较数值和运行历史保留，其中临时文件链接现已失效。
+- 新实验使用完整 `data-json/iscx/`，不是 iscx_small，也不是 iscx_train；10类共6781 flow。物理 GPU 0 负责 beta=0.01，物理 GPU 1 负责 beta=0.025，同时独立后台运行。
+- 参数沿用此前测试：`epoch=1000`、`batch_size=64`、`checkpoint=100`、`max_seq_len=16`、`expand_times=0`，八字段输入、ChiMerge、checkpoint OT选模及生成。这里“测试”沿用原有训练目录的 checkpoint 评估流程，没有新增独立测试集评估。
+- 两项均使用当前工作区代码快照，包含时间整数网格、裁剪/舍入累计频数、前缀 BOS 对齐修复；不改变用户明确保留的元字段统计和生成/保存设计。仅分别修改各快照 beta，主代码和全局配置保持原样。
+- 输出分别为 `bins/iscx_0_01/bins_iscx_0_01.json`、`model/iscx_0_01/`、`result/iscx_0_01/`，以及对应 `iscx_0_025` 路径。新输出均在启动前确认不存在，拒绝已有目录、日志和状态，不加载旧 checkpoint，不覆盖已有产物。
+- 日志以 beta 作后缀：`log/iscx_20261105_v1_0_01.log`、`log/iscx_20261105_v1_0_025.log`；分别合并 stdout/stderr、无缓冲。状态、配置、输入/代码 SHA-256 和代码快照分别保存在同名日志目录中的 `status.json`、`config.json`、`manifest.json`、`source/`，启动脚本为 `run.py`。
+- 输入通过各自 `input/iscx_0_01` / `input/iscx_0_025` 符号链接只读访问原始 ISCX；配置仅位于独立目录，不修改或重命名原始数据。源码快照和启动脚本语法编译通过。
+- 启动时间：2026-11-05T18:10:01+08:00；beta=0.01 PID/PGID=35381，beta=0.025 PID/PGID=35382。已确认两进程 PPID=1、各自独立 session，分别在物理 GPU 0/1 占用约864 MiB显存，GPU利用率约88%/86%。
+- 两份日志均确认 `No numbered checkpoint found; starting from epoch 0.`、设备cuda，从Epoch 1开始。最初4轮记录的每轮耗时稳定在约2.12/2.10秒，NLL、KL、beta*KL均为有限值。两者分箱数均为 time245、pkt_len554、flags13、ttl66、src_port235、dst_port77、src_ip29、dst_ip408，与修复后的比较一致。
+- 预计单项训练约35–38分钟，含10个 checkpoint 评估和最终生成，总墙钟耗时预估40–50分钟；两项并行，整体预计北京时间 18:50–19:00 完成，以日志与完成校验为准。
+- 每项预期生成与输入等量的6781 flow，完成后检查10个编号 checkpoint、1000条有限损失日志、类别集合、JSON可解析性、生成计数、序列长度及包字段有限值，全部通过才写completed。启动不代表实验已完成。
+
+启动命令（已执行，不要重复启动）：
+
+```bash
+cd /home/xiaozj/cgan
+setsid -f bash -c 'set -C; exec env CUDA_VISIBLE_DEVICES=0 PYTHONUNBUFFERED=1 /data/xiaozj/anaconda3/envs/exp/bin/python -u log/iscx_20261105_v1_0_01/run.py > log/iscx_20261105_v1_0_01.log 2>&1'
+setsid -f bash -c 'set -C; exec env CUDA_VISIBLE_DEVICES=1 PYTHONUNBUFFERED=1 /data/xiaozj/anaconda3/envs/exp/bin/python -u log/iscx_20261105_v1_0_025/run.py > log/iscx_20261105_v1_0_025.log 2>&1'
+```
+
+监测命令：
+
+```bash
+cd /home/xiaozj/cgan
+tail -f log/iscx_20261105_v1_0_01.log log/iscx_20261105_v1_0_025.log
+cat log/iscx_20261105_v1_0_01/status.json
+cat log/iscx_20261105_v1_0_025/status.json
+ps -p 35381,35382 -o pid,ppid,pgid,sid,etime,stat,args
+nvidia-smi
+```
+
+停止命令（先核实 PID/PGID 和命令仍为本次任务）：
+
+```bash
+ps -p 35381,35382 -o pid,pgid,etime,args
+# 仅停止 beta=0.01：
+kill -TERM -- -35381
+# 仅停止 beta=0.025：
+kill -TERM -- -35382
+# 或同时停止：
+kill -TERM -- -35381 -35382
+```
+
+- 当前仍在 `state-for-codex`；既有用户修改保留，未commit或push。
+
+
+## 2026-11-05 ISCX beta=0.05 / 0.1 双 GPU 并行测试
+
+- 用户授权在 ISCX 上增加 beta=0.05、0.1 两项测试，沿用上一轮 ISCX 测试方式：完整分箱 → 1000 epoch训练 → 每100 epoch的10个checkpoint评估选模 → 生成与校验。`batch_size=64`、`max_seq_len=16`、`expand_times=0`，八字段及修复后的 ChiMerge、前缀对齐保持一致。
+- 启动前确认 beta=0.01/0.025 两项状态均为completed，分别于18:49:36/18:48:28完成，各生成6781 flow，最佳checkpoint分别700/1000；两张GPU空闲，无需停止其他任务。
+- 新任务使用与已完成 ISCX beta=0.01 相同的代码快照，仅改变各自快照 beta。输入为 `data-json/iscx/`，10类、6781 flow，全部文件SHA-256与上一轮一致。主工作区代码、全局config和历史实验产物不修改。
+- GPU 0：beta=0.05，实验名 `iscx_0_05`，输出 `bins/iscx_0_05/bins_iscx_0_05.json`、`model/iscx_0_05/`、`result/iscx_0_05/`；日志 `log/iscx_20261105_v1_0_05.log`。
+- GPU 1：beta=0.1，实验名 `iscx_0_1`，对应输出 `bins/iscx_0_1/bins_iscx_0_1.json`、`model/iscx_0_1/`、`result/iscx_0_1/`；日志 `log/iscx_20261105_v1_0_1.log`。
+- 所有目标在准备时均不存在；脚本拒绝已有输出目录、状态和日志，保证不覆盖、不加载已有checkpoint。每个任务的同名日志目录中保存run.py、config.json、manifest.json、source/与status.json，包含输入/源码哈希；通过input符号链接只读访问原始ISCX。快照和启动脚本语法编译通过。
+- 后台启动时间：2026-11-05T18:56:10+08:00。beta=0.05 PID/PGID=39250，beta=0.1 PID/PGID=39251，各自独立session。任务结束前会校验10个编号checkpoint、1000条有限损失日志、生成类别、计数、JSON可解析性及包字段有限值，成功才标记completed。
+- 沿用此前checkpoint评估口径：与训练目录真实数据比较OT，不包含新增独立测试集。两项各预期生成6781 flow，无expand。
+- 上一轮相同规模实测总耗时约38.4–39.6分钟，预计本轮并行总墙钟耗时约40–50分钟，即北京时间 19:36–19:46 完成；启动不代表完成，实际以日志与状态为准。
+
+启动命令（已执行，不要重复启动）：
+
+```bash
+cd /home/xiaozj/cgan
+setsid -f bash -c 'set -C; exec env CUDA_VISIBLE_DEVICES=0 PYTHONUNBUFFERED=1 /data/xiaozj/anaconda3/envs/exp/bin/python -u log/iscx_20261105_v1_0_05/run.py > log/iscx_20261105_v1_0_05.log 2>&1'
+setsid -f bash -c 'set -C; exec env CUDA_VISIBLE_DEVICES=1 PYTHONUNBUFFERED=1 /data/xiaozj/anaconda3/envs/exp/bin/python -u log/iscx_20261105_v1_0_1/run.py > log/iscx_20261105_v1_0_1.log 2>&1'
+```
+
+监测命令：
+
+```bash
+cd /home/xiaozj/cgan
+tail -f log/iscx_20261105_v1_0_05.log log/iscx_20261105_v1_0_1.log
+cat log/iscx_20261105_v1_0_05/status.json
+cat log/iscx_20261105_v1_0_1/status.json
+ps -p 39250,39251 -o pid,ppid,pgid,sid,etime,stat,args
+nvidia-smi
+```
+
+停止命令（先确认PID/PGID与命令仍属于本轮实验）：
+
+```bash
+ps -p 39250,39251 -o pid,pgid,etime,args
+# 仅停止 beta=0.05：
+kill -TERM -- -39250
+# 仅停止 beta=0.1：
+kill -TERM -- -39251
+# 或同时停止：
+kill -TERM -- -39250 -39251
+```
+
+- 仍在state-for-codex，保留用户现有修改，未commit或push。

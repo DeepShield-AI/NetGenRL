@@ -38,6 +38,7 @@ def threshold_merge(intervals, data, min_unit, threshold = 1):
 
 # %%
 def chi_cal(interval_l,interval_r,num_ls,num_rs):
+    """Compute the merge statistic on intervals in integer grid coordinates."""
     left_board = interval_l[0]
     right_board = interval_r[1]
     empty_len = interval_r[0] - interval_l[1] - 1
@@ -145,7 +146,7 @@ def construct_intervals_data(data_dic, min_value, max_value, min_unit):
             if k not in tmp_dict:
                 # tmp_dict[k] = [0 for _ in range(len(labels))]
                 tmp_dict[k] = [0 for _ in range(seq_len)]
-            tmp_dict[k][id] = v
+            tmp_dict[k][id] += v
         id += 1
 
     tmp_lists = sorted(tmp_dict.items(), key=lambda x: x[0])
@@ -174,14 +175,22 @@ def fill_intervals(intervals, data, min_unit, min_value, max_value):
 
 def cal_bins_one_category(data_list, min_unit, min_value, max_value):
     intervals, data = construct_intervals_data(data_list, min_value, max_value, min_unit)
-    # print(data)
-    new_intervals,new_data = threshold_merge(intervals,data, min_unit)
+    # Work in integer grid coordinates so every adjacent legal value is one
+    # step apart, including time values such as 0 and 0.01 seconds.
+    intervals = [[int(round(start / min_unit)), int(round(end / min_unit))]
+                 for start, end in intervals]
+    new_intervals,new_data = threshold_merge(intervals,data, 1)
 
     alpha = 0.01
     df = new_data.shape[0] - 1
     critical_value = stats.chi2.ppf(1 - alpha, df)
 
     merged_intervals,merged_data = chi_merge(new_intervals,new_data,chi_threshold=critical_value)
+    # Keep the existing bins contract: interval endpoints use physical units.
+    precision = max(0, -int(math.log10(min_unit)))
+    merged_intervals = [[round(start * min_unit, precision),
+                         round(end * min_unit, precision)]
+                        for start, end in merged_intervals]
     return merged_intervals,merged_data
 
 def integrate_bins(intervals_dict, min_unit, min_value):
@@ -334,5 +343,3 @@ def chimerge(dataset, json_folder, bins_folder, ip_attrs, port_attrs, sery_attrs
     json_str = json.dumps(result_dic)
     with open(f'./{bins_folder}/bins_{dataset}.json', 'w') as file:
         file.write(json_str)
-
-    
