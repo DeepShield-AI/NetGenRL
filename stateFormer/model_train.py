@@ -34,7 +34,7 @@ def transformer_train(generator, dataloader, epochs, device, model_path, checkpo
     # train generator
     gen_optimizer = optim.Adam(generator.parameters(),lr=0.0001, betas=(0.5, 0.999))
     x_list = generator.x_list
-    beta = 0.05  
+    beta = 0.01 
     
     for epoch in range(start_epoch, epochs):
         start = time.perf_counter()
@@ -142,7 +142,15 @@ def model_train(label_dict, dataset, json_folder, bins_folder, model_folder,
 
     print("Process dataset...")
 
-    dataset = CustomDataset(data_folder = data_folder, bins_file=bins_file_name, class_mapping=label_dict,max_seq_len=max_seq_len, meta_attrs=meta_attrs,sery_attrs=sery_attrs)
+    encode_start = time.perf_counter()
+    preencode = model_paras.get('preencode', True)
+    dataset = CustomDataset(
+        data_folder=data_folder, bins_file=bins_file_name,
+        class_mapping=label_dict, max_seq_len=max_seq_len,
+        meta_attrs=meta_attrs, sery_attrs=sery_attrs, preencode=preencode,
+    )
+    print(f"Dataset ready: preencode={preencode}, samples={len(dataset)}, "
+          f"seconds={time.perf_counter() - encode_start:.3f}")
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
     print("Trainning...")

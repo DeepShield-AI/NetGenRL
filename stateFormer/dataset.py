@@ -6,7 +6,7 @@ import json
 import os
 
 class CustomDataset(Dataset):
-    def __init__(self, data_folder, bins_file, class_mapping, max_seq_len, meta_attrs, sery_attrs, transform=None):
+    def __init__(self, data_folder, bins_file, class_mapping, max_seq_len, meta_attrs, sery_attrs, transform=None, preencode=False):
 
         self.data_folder = data_folder
         self.class_mapping = class_mapping
@@ -34,24 +34,61 @@ class CustomDataset(Dataset):
             
         with open(bins_file, 'r') as f_bin:
             self.bins_data = json.load(f_bin)
-        
+
+        self._size = len(self.data)
+        self._encoded = None
+        self._lookup_cache = None
+        if preencode:
+            # Deterministic preprocessing only: preserve sample order and RNG.
+            fields = len(self.sery_attrs) + len(self.meta_attrs)
+            self._encoded = (
+                torch.empty((self._size, self.max_seq_len, fields), dtype=torch.long),
+                torch.empty((self._size, len(self.class_mapping)), dtype=torch.float32),
+                torch.empty(self._size, dtype=torch.float32),
+                torch.empty(self._size, dtype=torch.float32),
+            )
+            self._lookup_cache = {attr: {} for attr in self.sery_attrs + self.meta_attrs}
+            for idx in range(self._size):
+                for column, value in zip(self._encoded, self._encode_item(idx)):
+                    column[idx] = value
+            # The tensors retain only the training prefix; release raw JSON
+            # objects and temporary lookup dictionaries before training.
+            self._lookup_cache = None
+            self.data = []
+            self.labels = []
 
     def __len__(self):
-        return len(self.data)
+        return self._size
 
     def __getitem__(self, idx):
-        
-        def find_interval(value, intervals):
-            for idx, [start, end] in enumerate(intervals):
-                if start <= round(value,2) <= end:
-                    return idx + 1
-            if round(value,2) > intervals[-1][1]:
-                return len(intervals)
-            if round(value,2) < intervals[0][0]:
-                return 1
-            print(f"Value {value} not found in any interval.")
-            return None
-            
+        if self._encoded is not None:
+            return tuple(column[idx] for column in self._encoded)
+        return self._encode_item(idx)
+
+    def _find_interval(self, attr, value):
+        rounded = round(value, 2)
+        cache = self._lookup_cache[attr] if self._lookup_cache is not None else None
+        if cache is not None and rounded in cache:
+            return cache[rounded]
+        intervals = self.bins_data[attr]['intervals']
+        result = None
+        # Retain first-match semantics for shared boundaries and overlaps.
+        for idx, (start, end) in enumerate(intervals):
+            if start <= rounded <= end:
+                result = idx + 1
+                break
+        if result is None:
+            if rounded > intervals[-1][1]:
+                result = len(intervals)
+            elif rounded < intervals[0][0]:
+                result = 1
+            else:
+                print(f"Value {value} not found in any interval.")
+        if cache is not None and result is not None:
+            cache[rounded] = result
+        return result
+
+    def _encode_item(self, idx):
         item = self.data[idx]
         label_str = self.labels[idx]
         length = min(len(item['series']),self.max_seq_len)
@@ -65,14 +102,14 @@ class CustomDataset(Dataset):
         meta_list = []
         for attr in self.meta_attrs:
             meta = item[attr]
-            meta_id = find_interval(meta,self.bins_data[attr]['intervals'])
+            meta_id = self._find_interval(attr, meta)
             meta_list.append(meta_id)
             
         count = 0
         for pkt in item['series']:
             id_list = []
             for attr in self.sery_attrs:
-                id_list.append(find_interval(pkt[attr],self.bins_data[attr]['intervals']))
+                id_list.append(self._find_interval(attr, pkt[attr]))
                 # print(attr)
             id_list += meta_list
             seq.append(id_list)

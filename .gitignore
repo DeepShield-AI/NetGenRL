@@ -9,6 +9,11 @@ wordvec/
 model/
 result/
 log/
+baseline/
+tests/
+seqCGAN/
+scripts/
+*_report.md
 cuda*
 *.txt
 *.log

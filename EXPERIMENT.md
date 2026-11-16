@@ -659,3 +659,538 @@ kill -TERM -- -39250 -39251
 ```
 
 - 仍在state-for-codex，保留用户现有修改，未commit或push。
+
+
+## 2026-11-05 beta=0.05 正式双 GPU 实验 v2
+
+- 用户已将主工作区 `stateFormer/model_train.py` 的 beta设为0.05，本次准备时通过AST核实该赋值，并原样保存当前代码快照，未覆盖用户修改。仍在 `state-for-codex`，未切换分支。
+- GPU 0严格依次运行：`utmn` → `ssrc` → `iscx` → `mirage` → `cesnet3`。
+- GPU 1严格依次运行对应训练集：`utmn-train` → `ssrc_train` → `iscx_train` → `mirage-train` → `cesnet3-train`。SSRC/ISCX训练集使用磁盘实际下划线命名，未创建替代数据集或更改原始目录。
+- 每个数据集完整完成分箱 → 训练 → 10个checkpoint评估选模 → 生成 → 输出校验后，才进入同GPU下一个数据集；两GPU队列独立并行，一条失败即停止该队列，另一条继续。
+- 参数：`beta=0.05`、`epoch=1000`、`batch_size=64`、`checkpoint=100`、`max_seq_len=16`、`expand_times=0`；沿用八字段、GPU后处理，包含时间整数网格、裁剪/舍入频数累加和前缀BOS修复，保留用户明确指定的元字段统计及生成/保存设计。
+- 配置分别保存到 `log/formal_20261105_v2/[数据集].config.json`，源码快照位于同目录 `source/`（14个Python文件）；顺序、输入计数/哈希、源码哈希见manifest.json。启动后每个worker只导入此快照，后续工作区编辑不会改变排队任务的训练代码。全局config保持原样，各任务配置明确覆盖expand_times为0。
+- 准备阶段完整解析十个数据集的类别JSON，核对非空series及模型使用字段的有限值，保存SHA-256；所有源码快照及运行脚本语法编译通过。每个数据集开始前再次检查输入哈希和CUDA。
+- 用户授权覆盖的精确输出是 `bins/bins_[数据集].json`、`model/[数据集]/`、`result/[数据集]/`；每个任务开始前清理这三个对应目标，确保不读取旧编号checkpoint或旧结果。尚未开始的数据集保留旧产物，轮到该任务时才清理。beta对比实验目录、iscx_small系列、baseline及原始数据均不作为清理目标。
+- 日志位于 `log/[数据集]_20261105_v2.log`，合并stdout/stderr、无缓冲；v1日志和所有既有实验记录保留。所有v2日志在准备时确认不存在，创建日志时使用exclusive模式，防止意外重启覆盖。
+- 输出checkpoint为generator.pth及generator_100.pth至generator_1000.pth共10个编号文件；结果为每类JSON，无expand，生成flow数应与输入一致。完成阶段校验1000条有限损失日志、编号集合、输出类别、JSON可解析性、生成计数、长度及包字段有限值，通过才写completed。checkpoint选模沿用训练目录的OT评估口径，未增加独立测试集。
+
+| 数据集 | GPU | 类别数 | 输入／预期生成 flow |
+|---|---:|---:|---:|
+| utmn | 0 | 17 | 5,057 |
+| ssrc | 0 | 9 | 7,426 |
+| iscx | 0 | 10 | 6,781 |
+| mirage | 0 | 20 | 33,975 |
+| cesnet3 | 0 | 21 | 209,999 |
+| utmn-train | 1 | 17 | 4,047 |
+| ssrc_train | 1 | 9 | 5,942 |
+| iscx_train | 1 | 10 | 5,475 |
+| mirage-train | 1 | 20 | 27,180 |
+| cesnet3-train | 1 | 21 | 167,999 |
+
+启动与早期验证：
+
+- 启动前两张RTX3080均空闲；上一轮ISCX beta=0.05/0.1实验已分别于19:35:46/19:34:44完成，各生成6781 flow，不受本次同名正式目录覆盖影响。磁盘剩余约57 GiB，同名旧输出按任务替换，不累计备份。
+- 启动时间：2026-11-05T19:51:23+08:00；GPU 0队列PID/PGID/SID=43650，初始worker PID=43654；GPU 1队列PID/PGID/SID=43651，初始worker PID=43653。父队列PPID=1，worker随数据集切换而变化，PGID保持为各自队列。
+- 已检查两张物理GPU分别运行对应worker，显存约982/992 MiB；两份首任务日志均确认从epoch 0开始、设备cuda、beta=0.05，NLL/KL/beta*KL为有限值。本轮UTMN初始稳定每轮约2.35秒、UTMN-train约1.78秒。
+- v2包装脚本避免在信号处理函数中调用Popen.wait/poll，改为标记停止并在主循环处理，以避免v1的信号等待死锁。已使用/tmp内不涉及GPU或训练的模拟worker验证两种TERM方式：向整进程组发送TERM、仅向父队列发送TERM，均退出码143、状态stopped且worker被回收；测试通过。
+
+运行时间预估：
+
+- 历史八字段ChiMerge实验单纯训练线性估计：GPU 0约68小时、GPU 1约53小时；本轮小数据初速接近历史值。修复时间网格后部分分箱数增加，大数据集实际速度尚未测得，需为编码和评估留出余量。
+- GPU 0全队列约65–90小时，GPU 1约50–75小时，整体约65–90小时（约2.7–3.8天）；以本次启动时间计算，整体预计北京时间 2026-11-08 12:51 至 2026-11-09 13:51 完成。主要耗时为MIRAGE/CESNET3，此为估计，最终以日志、队列和任务完成校验为准。
+
+启动命令（已执行，不要重复启动）：
+
+```bash
+cd /home/xiaozj/cgan
+setsid -f bash -c 'set -C; exec /data/xiaozj/anaconda3/envs/exp/bin/python -u log/formal_20261105_v2/run.py lane 0 > log/formal_20261105_v2/gpu0.queue.log 2>&1'
+setsid -f bash -c 'set -C; exec /data/xiaozj/anaconda3/envs/exp/bin/python -u log/formal_20261105_v2/run.py lane 1 > log/formal_20261105_v2/gpu1.queue.log 2>&1'
+```
+
+监测命令：
+
+```bash
+cd /home/xiaozj/cgan
+cat log/formal_20261105_v2/gpu0.status.json
+cat log/formal_20261105_v2/gpu1.status.json
+tail -f log/formal_20261105_v2/gpu0.queue.log log/formal_20261105_v2/gpu1.queue.log
+# 根据队列active字段切换到当前数据集日志；下面是初始两个任务。
+tail -f log/utmn_20261105_v2.log log/utmn-train_20261105_v2.log
+cat log/formal_20261105_v2/utmn.status.json
+ps -p 43650,43651 -o pid,ppid,pgid,sid,etime,stat,args
+nvidia-smi
+```
+
+停止指令（先核实PID/PGID与命令仍属于本轮队列；停止队列会终止当前worker及后续任务）：
+
+```bash
+ps -p 43650,43651 -o pid,pgid,etime,args
+# 仅停止GPU 0队列：
+kill -TERM -- -43650
+# 仅停止GPU 1队列：
+kill -TERM -- -43651
+# 或同时停止两条队列：
+kill -TERM -- -43650 -43651
+ps -p 43650,43651 -o pid,pgid,stat,args
+```
+
+- TERM会将队列与worker状态记为stopped；若被强制KILL或主机异常，状态可能停留running，需结合实际进程与日志判断。本节只证明启动成功，尚不代表十组正式实验完成。未commit或push。
+
+
+## 2026-11-09 beta=0.01 新正式训练：仅GPU 1，先*-train再完整数据
+
+- 用户已将主代码beta改为0.01，本次准备阶段通过AST核实 `transformer_train()` 中beta=0.01，并保存当前源码快照；仍在state-for-codex，未切换分支或修改用户代码。
+- 仅使用物理GPU 1。严格顺序为 `utmn-train` → `ssrc_train` → `iscx_train` → `mirage-train` → `cesnet3-train` → `utmn` → `ssrc` → `iscx` → `mirage` → `cesnet3`。每项完整完成分箱、训练、checkpoint选模、生成及校验后才进入下一项。
+- 用户称“测试集（*-train）”，执行以括号中指定的*-train目录为准，不改用*-test。SSRC/ISCX对应目录的实际命名为ssrc_train/iscx_train，输入与日志保留此命名，未重命名或修改任何源数据。
+- 配置：beta=0.01、epoch=1000、batch_size=64、checkpoint=100、max_seq_len=16、expand_times=0。保留八字段、修复后的ChiMerge和前缀BOS对齐，以及用户明确保留的元字段统计、生成/保存设计。全局config保持原样，任务独立配置明确设置expand_times=0。
+- 当前已存在旧 `iscx_0_01` 对比输出，为保证不覆盖，新建日期隔离层 `formal_20261109_v1`，各数据集下一级目录均使用 `[实际数据集名]_0_01`。路径为：
+  - `bins/formal_20261109_v1/[数据集]_0_01/bins_[数据集]_0_01.json`
+  - `model/formal_20261109_v1/[数据集]_0_01/generator.pth` 及100至1000共10个编号checkpoint
+  - `result/formal_20261109_v1/[数据集]_0_01/[类别].json`
+- 例如完整ISCX输出是 `result/formal_20261109_v1/iscx_0_01/`，既有根级 `result/iscx_0_01/` 保留。本轮没有删除或覆盖任何旧bins/model/result；包装脚本已移除清理逻辑，输出目录使用mkdir(exist_ok=False)，若存在则直接失败，不续训。
+- 中间stdout/stderr无缓冲合并写入 `log/[实际数据集名]_20261109_v1.log`，例如utmn-train_20261109_v1.log、ssrc_train_20261109_v1.log。新日志全部确认不存在，创建采用exclusive模式，拒绝重复启动覆盖。
+- `log/formal_20261109_v1/` 保存run.py、manifest.json、各任务config、source/代码快照及状态；input/中通过数据集别名符号链接只读访问原始data-json目录。准备时完整解析十份数据的全部类别JSON，核对非空series、使用字段及有限值，保存输入和14个源码文件的SHA-256；快照和包装脚本语法编译通过，各worker启动时再次校验输入哈希。
+- 快照beta保持用户设定0.01，后续工作区修改不会影响排队任务的代码。每个任务创建新的空模型目录，日志必须从epoch 0开始。模型不使用已有权重或结果。
+
+| 输入数据集／执行顺序 | 输出目录名 | 输入／预期生成flow | 上轮同规模实际总耗时 |
+|---|---|---:|---:|
+| utmn-train | utmn-train_0_01 | 4,047 | 0.54小时 |
+| ssrc_train | ssrc_train_0_01 | 5,942 | 0.49小时 |
+| iscx_train | iscx_train_0_01 | 5,475 | 0.53小时 |
+| mirage-train | mirage-train_0_01 | 27,180 | 7.72小时 |
+| cesnet3-train | cesnet3-train_0_01 | 167,999 | 47.17小时 |
+| utmn | utmn_0_01 | 5,057 | 0.70小时 |
+| ssrc | ssrc_0_01 | 7,426 | 0.68小时 |
+| iscx | iscx_0_01 | 6,781 | 0.66小时 |
+| mirage | mirage_0_01 | 33,975 | 10.00小时 |
+| cesnet3 | cesnet3_0_01 | 209,999 | 59.07小时 |
+
+- 本轮无expand，预期总生成473881 flow。完成阶段核对1000条有限损失日志、10个编号checkpoint、结果类别、JSON解析、计数、长度和包字段有限值，通过后才写completed。一个任务失败就停止整条队列，避免跳过失败而继续。
+- checkpoint选模仍沿用同任务数据目录的OT评估，未新增独立测试集评估。本轮不使用之前生成结果作为输入。
+
+启动与资源检查：
+
+- 启动前确认上一轮beta=0.05两队列均completed，分别结束于11月8日04:18:43（GPU1）和18:58:12（GPU0）。GPU1空闲；GPU0另有PID76138在运行，本轮未停止、修改或占用GPU0。
+- 新队列启动于 2026-11-09T20:16:26+08:00；队列PID/PGID/SID=80372，初始worker PID=80373。队列PPID=1，已确认后台独立session持续运行；worker随任务变化，队列PGID保持不变。
+- 初始UTMN-train已完成分箱并从epoch 0开始，设备cuda、beta=0.01；NLL/KL/beta*KL为有限值，稳定每轮约1.76秒。物理GPU1 worker=80373，显存约992MiB；GPU0原进程仍在运行。启动前磁盘剩余约61GiB。
+
+运行时间预估：
+
+- 上轮相同十项实际总耗时相加约127.6小时（前五项约56.5小时、后五项约71.1小时）；上轮两卡并行，本轮仅一张GPU顺序执行，因此需要累计两部分耗时。
+- 本轮前五个*-train任务预计约55–65小时，后五个完整数据约65–80小时，总墙钟耗时预计120–145小时，约5–6天。按启动时间估计，整体大致于北京时间 2026-11-14 20:16 至 2026-11-15 21:16 完成。beta变化、CPU竞争和大数据集评估都会影响耗时，以实际日志及状态为准。
+
+启动命令（已执行，不要重复启动）：
+
+```bash
+cd /home/xiaozj/cgan
+setsid -f bash -c 'set -C; exec env CUDA_VISIBLE_DEVICES=1 /data/xiaozj/anaconda3/envs/exp/bin/python -u log/formal_20261109_v1/run.py lane 1 > log/formal_20261109_v1/gpu1.queue.log 2>&1'
+```
+
+监测命令：
+
+```bash
+cd /home/xiaozj/cgan
+cat log/formal_20261109_v1/gpu1.status.json
+tail -f log/formal_20261109_v1/gpu1.queue.log
+# 按状态中的active字段选择当前日志；启动时是UTMN-train。
+tail -f log/utmn-train_20261109_v1.log
+cat log/formal_20261109_v1/utmn-train.status.json
+ps -p 80372 -o pid,ppid,pgid,sid,etime,stat,args
+nvidia-smi
+```
+
+停止命令（先核对PID/PGID与命令仍属于本轮队列；该操作同时停止当前worker和所有后续排队任务）：
+
+```bash
+ps -p 80372 -o pid,pgid,etime,args
+kill -TERM -- -80372
+ps -p 80372 -o pid,pgid,stat,args
+```
+
+- TERM处理沿用已验证的v2主循环停止机制，避免在信号处理函数内阻塞wait；强制KILL/主机异常可能留下running状态，须结合实际进程判断。本节仅记录启动成功，十项任务尚未完成。未commit或push。
+
+
+## 2026-11-09 顺序更正并清理重启：*-train与完整数据交替运行
+
+- 用户更正顺序并明确要求停止原任务、删除其产生文件、重新启动。上一节“先五个*-train、后五个完整数据”的顺序已作废，旧PID80372/worker80373及旧停止指令已失效；其余参数和存储要求保持不变。
+- 已核实原队列PGID80372，发送TERM后队列状态stopped，ps确认父队列和worker均不存在，nvidia-smi确认GPU1计算进程退出。原任务最后记录UTMN-train epoch 104/1000，没有任何数据集完成；旧worker未留存运行。
+- 确认停止后，删除原任务新增的 `bins/formal_20261109_v1/`、`model/formal_20261109_v1/`、`result/formal_20261109_v1/`、`log/formal_20261109_v1/` 及清单中已创建的 `log/utmn-train_20261109_v1.log`。其中包括旧分箱、generator.pth、generator_100.pth、空结果目录、旧状态、代码快照、配置与队列日志；未删除或覆盖其他历史实验和原始数据。
+- 随后在相同路径创建全新的正确顺序运行，重新生成代码/配置/输入哈希清单，未加载已删除的checkpoint。旧任务元信息仅以清理说明写入新的restart_info.json和本节历史记录，不保留旧实验产物。
+- 仅物理GPU1，新顺序严格为：`utmn-train` → `utmn` → `ssrc_train` → `ssrc` → `iscx_train` → `iscx` → `mirage-train` → `mirage` → `cesnet3-train` → `cesnet3`。SSRC/ISCX训练目录沿用磁盘实际下划线命名。每个任务完整分箱、训练、选模、生成和校验后才进入下一项。
+- beta=0.01、1000 epoch、batch_size=64、checkpoint=100、max_seq_len=16、expand_times=0；输出仍为bins/model/result各自 `formal_20261109_v1/[数据集]_0_01/`，bins文件为 `bins_[数据集]_0_01.json`，日志 `log/[实际数据集名]_20261109_v1.log`。新运行拒绝已有目标目录和日志，不覆盖其他既有beta结果。
+- 重新准备时解析并核验十个数据集，保存14个源文件快照及SHA-256；脚本和源码语法编译通过。已检查manifest、队列脚本的顺序完全一致，全部gpu=1、beta=0.01，目标输出路径在启动前均不存在。
+- 新启动时间：2026-11-09T20:20:40+08:00。新队列PID/PGID/SID=81124，初始worker PID=81125；已脱离终端，父队列PPID=1。GPU1仅新worker在运行，显存约992MiB；GPU0原进程76138未受影响。
+- 新UTMN-train日志明确从epoch 0开始，已记录Epoch 1及后续训练，NLL/KL/beta*KL有限，每轮约1.76秒；这证明全新启动，不是从旧epoch104或checkpoint100续训。
+- 总任务量不变，预计总耗时仍约120–145小时（5–6天），基于本次重新启动时间，整体预计北京时间 2026-11-14 20:20 至 2026-11-15 21:20 完成。顺序改变只改变各数据集的开始/完成先后，最终耗时仍以实际日志为准。
+
+重新启动命令（已执行，不要重复启动）：
+
+```bash
+cd /home/xiaozj/cgan
+setsid -f bash -c 'set -C; exec env CUDA_VISIBLE_DEVICES=1 /data/xiaozj/anaconda3/envs/exp/bin/python -u log/formal_20261109_v1/run.py lane 1 > log/formal_20261109_v1/gpu1.queue.log 2>&1'
+```
+
+当前有效监测命令：
+
+```bash
+cd /home/xiaozj/cgan
+cat log/formal_20261109_v1/gpu1.status.json
+tail -f log/formal_20261109_v1/gpu1.queue.log
+# 根据active字段切换到当前任务日志；初始为UTMN-train。
+tail -f log/utmn-train_20261109_v1.log
+ps -p 81124 -o pid,ppid,pgid,sid,etime,stat,args
+nvidia-smi
+```
+
+当前有效停止指令（先核对PID/PGID与命令；停止当前任务及后续队列）：
+
+```bash
+ps -p 81124 -o pid,pgid,etime,args
+kill -TERM -- -81124
+ps -p 81124 -o pid,pgid,stat,args
+```
+
+- 保留EXPERIMENT历史并以本节纠正原顺序与PID；未修改用户模型代码或全局配置，未commit或push。
+
+
+## 2026-11-10 停止并保留beta=0.01队列，启动beta=0.001正式串行实验
+
+- 用户已将主代码beta改为0.001，并要求停止当前任务、保留旧文件，在GPU1开启全新串行训练和生成。已通过AST核实用户赋值，未修改主代码或全局config，仍在state-for-codex。
+- 已核实旧队列PID/PGID81124、当前MIRAGE worker82716，于13:57:06发送TERM并正常退出；旧队列状态stopped，ps和GPU检查确认两进程均不存在。原 `log/bins/model/result` 下formal_20261109_v1及所有独立日志和历史实验文件均保留，未清理。
+- 停止前旧队列完成7项：utmn-train、utmn、ssrc_train、ssrc、iscx_train、iscx、mirage-train；完整mirage最后记录661/1000，cesnet3-train和cesnet3尚未开始。旧任务保持原状态和产物，不用于新队列的续训。
+- 新运行隔离名formal_20261110_v1，beta=0.001，仅物理GPU1。顺序不变：utmn-train → utmn → ssrc_train → ssrc → iscx_train → iscx → mirage-train → mirage → cesnet3-train → cesnet3；每项完整分箱、训练、checkpoint评估选模、生成和校验后才运行下一项。
+- 参数不变：1000 epoch、batch_size=64、checkpoint=100、max_seq_len=16、expand_times=0，八字段、已修复ChiMerge及前缀BOS对齐，保留用户指定的元字段统计和生成/保存设计。
+- 新结果为 `bins/formal_20261110_v1/[实际数据集名]_0_001/bins_[实际数据集名]_0_001.json`、`model/formal_20261110_v1/[实际数据集名]_0_001/`、`result/formal_20261110_v1/[实际数据集名]_0_001/`。对应旧正式实验及历史beta=0.001结果不受影响。新任务拒绝已有输出目录，不删除旧文件，不使用旧模型或生成结果。
+- 中间日志为 `log/[实际数据集名]_20261110_v1.log`；队列管理、状态和配置/代码快照位于 `log/formal_20261110_v1/`。日志创建使用exclusive模式防止覆盖。源码快照14个Python文件、beta=0.001、输入/源码SHA-256及10份配置均已校验，语法编译通过。
+- 全部源数据保持只读，通过新运行目录下的input符号链接访问；本轮预期无expand生成总计473881 flow。各任务完成时检查1000条有限损失日志、10个编号checkpoint、生成类别/计数、JSON可解析性及包字段有限值，成功才写completed。checkpoint评估沿用同任务数据目录OT口径，未新增独立测试集。
+- 新队列启动于 2026-11-10T13:57:58+08:00；PID/PGID/SID=89189，初始UTMN-train worker=89190。已确认旧进程退出，新worker在物理GPU1运行，显存约992MiB；初始日志明确从epoch 0开始，已到Epoch 11，NLL/KL/beta*KL均有限，每轮约1.73–1.74秒。启动前磁盘剩余约54GiB。
+
+每个数据集预期耗时（含分箱、1000轮训练、10个checkpoint选模及生成，不含等待队列前序任务）：
+
+| 顺序 | 数据集 | 预计耗时 |
+|---|---|---:|
+| 1 | utmn-train | 30–40分钟 |
+| 2 | utmn | 40–50分钟 |
+| 3 | ssrc_train | 25–35分钟 |
+| 4 | ssrc | 30–45分钟 |
+| 5 | iscx_train | 28–38分钟 |
+| 6 | iscx | 35–45分钟 |
+| 7 | mirage-train | 7–9小时 |
+| 8 | mirage | 9–12小时 |
+| 9 | cesnet3-train | 44–53小时 |
+| 10 | cesnet3 | 55–65小时 |
+
+- 估计依据：刚停止的GPU1队列实际总耗时约为utmn-train33.1分钟、utmn43.1分钟、ssrc_train29.6分钟、ssrc36.4分钟、iscx_train30.9分钟、iscx38.8分钟、mirage-train7.65小时；完整mirage近期每轮约35.49秒，1000轮纯训练约9.86小时。CESNET3两项参考11月5日正式v2已完成的约47.17/59.07小时。beta变化、系统负载和OT评估有波动，保留估计范围。
+- 总墙钟时间预计约120–145小时（约5–6天），大致北京时间 2026-11-15 13:57 至 2026-11-16 14:57 完成。当前仅证明启动，不能视作任务已完成。
+
+启动命令（已执行）：
+
+```bash
+cd /home/xiaozj/cgan
+setsid -f bash -c 'set -C; exec env CUDA_VISIBLE_DEVICES=1 /data/xiaozj/anaconda3/envs/exp/bin/python -u log/formal_20261110_v1/run.py lane 1 > log/formal_20261110_v1/gpu1.queue.log 2>&1'
+```
+
+当前监测命令：
+
+```bash
+cd /home/xiaozj/cgan
+cat log/formal_20261110_v1/gpu1.status.json
+tail -f log/formal_20261110_v1/gpu1.queue.log
+# 按active字段切换到当前数据集日志；启动时为UTMN-train。
+tail -f log/utmn-train_20261110_v1.log
+ps -p 89189 -o pid,ppid,pgid,sid,etime,stat,args
+nvidia-smi
+```
+
+当前停止指令（先确认PID/PGID和命令仍属于本轮队列；停止当前worker及后续排队任务）：
+
+```bash
+ps -p 89189 -o pid,pgid,etime,args
+kill -TERM -- -89189
+ps -p 89189 -o pid,pgid,stat,args
+```
+
+- 原队列停止指令不再用于本轮任务，旧产物均保留。未commit或push。
+
+
+## 2026-11-13 保存检查点并暂停beta=0.001队列，释放GPU1与进程内存
+
+- 用户要求检查进度、保存当前检查点以便下次继续，并暂停释放显存及内存。本次未修改主模型、训练代码、配置或原始数据。
+- 暂停前队列PID/PGID89189，当前worker150808，物理GPU1上运行完整cesnet3；前9项均已完成。已重新解析前9项全部结果JSON，逐类生成数与输入一致，且每项10个编号checkpoint均存在，不仅依赖状态文件。
+
+| 数据集 | 进度 | 已生成flow |
+|---|---|---:|
+| utmn-train | 1000/1000，生成已校验 | 4,047 |
+| utmn | 1000/1000，生成已校验 | 5,057 |
+| ssrc_train | 1000/1000，生成已校验 | 5,942 |
+| ssrc | 1000/1000，生成已校验 | 7,426 |
+| iscx_train | 1000/1000，生成已校验 | 5,475 |
+| iscx | 1000/1000，生成已校验 | 6,781 |
+| mirage-train | 1000/1000，生成已校验 | 27,180 |
+| mirage | 1000/1000，生成已校验 | 33,975 |
+| cesnet3-train | 1000/1000，生成已校验 | 167,999 |
+| cesnet3 | 已完成49/1000，暂停 | 尚未选模／生成 |
+
+- 保存步骤：先核对PID/PGID后向本轮进程组发送SIGSTOP，冻结权重写入；冻结时日志已打印第49轮，generator.pth写入时间晚于该轮日志。将其复制为独立暂停文件，通过CPU `torch.load(weights_only=True)`、178个tensor的有限值检查及当前快照模型的strict load_state_dict形状检查；文件大小102,695,179字节，SHA-256与冻结的generator.pth一致。原generator.pth保留。
+- 独立暂停检查点：`model/formal_20261110_v1/cesnet3_0_001/paused_epoch_49_20261113.pth`；最近完整轮次49，下次从第50轮继续到1000，未保存的第50轮部分batch工作不计入完成进度。
+- 暂停元信息：`log/formal_20261110_v1/pause_20261113.json`，保存checkpoint/bins/源码哈希、配置、类别映射、完成队列及恢复轮次。输入文件哈希也已与本轮manifest核对。
+- 核验检查点成功后，对冻结的原进程组发送TERM再CONT，使已挂起信号正常处理并退出；ps确认队列89189与worker150808均不存在。GPU1显存由约1123MiB降至15MiB，无GPU1计算进程，相关训练进程RAM已随退出释放。GPU0另有PID150640占用约8340MiB，未干预该任务。
+- 队列gpu1.status.json和cesnet3.status.json已明确记录paused、checkpoint、第49轮及next_epoch=50，日志追加PAUSED记录；暂停时刻为2026-11-13T12:25:37+08:00。不再将旧进程PID视为活跃任务，所有旧产物保留。
+- 重要恢复限制：原训练代码只保存模型state_dict，没有保存Adam优化器状态或随机数状态，无法事后补回；本检查点支持从第49轮权重继续训练，但Adam/RNG将重新初始化，不是逐步数值完全相同的恢复。
+- 已准备 `log/formal_20261110_v1/resume_cesnet3_from_pause.py`，仅对剩余cesnet3运行；恢复前校验权重、bins、输入和代码快照哈希，固定已记录类别映射，跳过ChiMerge，并强制从该暂停文件/epoch49加载。不会重训前9项、重建bins、加载其他dataset权重或从epoch0开始。完成剩余951轮后照原规则评估100至1000共10个checkpoint并生成结果、校验后更新整队列completed。
+- 续训stdout/stderr由脚本exclusive创建 `log/cesnet3_20261113_resume_v1.log`，不覆盖原日志；最终检查原日志1–49轮与续训日志50–1000轮共同完整覆盖1000轮。脚本语法检查通过；当前仅准备，未执行任何续训，任务仍paused。
+
+当前暂停状态与检查点检查命令：
+
+```bash
+cd /home/xiaozj/cgan
+cat log/formal_20261110_v1/gpu1.status.json
+cat log/formal_20261110_v1/pause_20261113.json
+ls -lh model/formal_20261110_v1/cesnet3_0_001/paused_epoch_49_20261113.pth
+nvidia-smi
+```
+
+下次明确要求恢复时使用以下专用命令（本次未执行；不要重跑原lane/case命令，因为原入口拒绝已有状态/输出）：
+
+```bash
+cd /home/xiaozj/cgan
+setsid -f env CUDA_VISIBLE_DEVICES=1 PYTHONUNBUFFERED=1 /data/xiaozj/anaconda3/envs/exp/bin/python -u log/formal_20261110_v1/resume_cesnet3_from_pause.py
+```
+
+恢复后的监测：
+
+```bash
+cat log/formal_20261110_v1/gpu1.status.json
+tail -f log/cesnet3_20261113_resume_v1.log
+```
+
+- 当前不保留占用GPU/RAM的STOP进程，也不进行后续训练；保持state-for-codex，未commit或push。
+
+
+## 2026-11-13 CESNET3训练速度优化：实施、等价验证与候选淘汰
+
+- 用户授权在GPU1实施并验证上轮方案，不进行完整实验，达不到预期的方法不保留。当前仍在state-for-codex，GPU0有其他任务，本次仅GPU1运行短程验证。
+- 修改前已读取AGENT及相关调用链，将当前dataset.py、model_train.py、transformer.py（含用户现有beta=0.001修改）保存到 `log/training_optimization_20261113_v1/baseline/`，记录SHA-256。未回滚用户已有beta或visual.ipynb修改。
+
+保留的实现：
+
+- `stateFormer/dataset.py` 新增 `preencode=False` 兼容开关。启用时一次性编码序列/one-hot标签/长度/类别权重，后续getitem仅索引CPU缓存；编码保留原文件/样本顺序、前16包截断、真实ID1..N、特殊0、padding和float32/long类型。
+- 分箱查询每个值只round一次，且预编码期间按属性/舍入值复用首次查找结果。仍逐区间first-match，不替换为假设区间无重叠的二分查找；边界共享、上下界裁剪和类别逆频权重均保留。
+- 预编码后释放原始JSON列表、标签列表和临时查找字典；CESNET3缓存为234,358,884字节（约223.5MiB），构建耗时10.44秒。
+- `stateFormer/model_train.py` 默认通过 `model_paras.get('preencode', True)` 启用缓存，输出编码准备耗时；可设preencode=false关闭。Dataset本身默认仍为lazy，避免改变其他预处理调用的行为。
+- 训练函数transformer_train经AST确认与修改前完全相同：NLL/KL定义、beta、优化器、batch_size、精度、checkpoint保存频率均不变；transformer.py经逐字节确认与本次开始时相同。
+
+验证（限定规模，无正式实验）：
+
+1. `tests/test_dataset_cache.py` 3项CPU回归通过：原/新序列等价、共享边界first-match、舍入/越界、padding/截断、one-hot和类别权重、负索引、shuffle、RNG不变及缓存释放。
+2. 全量CESNET3共209,999样本逐项对照修改前原实现，seq/label/length/weight的值和dtype全部完全一致，预编码不改变CPU随机状态，固定shuffle种子下首batch完全一致。原实现全量访问加比较耗时174.88秒；缓存纯访问0.508秒，两者工作量不同，不直接作为训练加速比。
+3. GPU1两步严格对照中，预测、mu/logvar/state/noise、NLL/KL/总损失、各参数梯度、Adam状态及更新后权重逐位一致。首次测试脚本仅复位CUDA RNG，漏掉模型在CPU生成的noise随机状态而断言失败；补齐CPU+CUDA RNG复位后通过，并非产品数值差异。
+4. 固定CPU/CUDA及Python随机状态，实际get_gen_data生成3条不同长度flow，反分箱后的JSON完全相同；生成逻辑没有修改。
+5. 直接调用修改前/后的真实transformer_train，各对同1024条真实样本运行16个batch、仅1个限定子集轮次（start_epoch=49、epochs=50），临时保存的全部权重逐位相同；日志两者NLL/KL/总损失一致，临时输出自动清除，不写正式模型目录。
+
+速度对比（同一1024条真实样本、batch64，4batch预热，3次轮换测试顺序）：
+
+| 方法 | 每16个batch耗时中位数 | 决策 |
+|---|---:|---|
+| 原始逐样本编码 | 0.999949秒 | 基线 |
+| 预编码缓存 | 0.370691秒 | 保留，约2.70倍加速 |
+| 缓存+pin_memory+异步传输 | 0.368117秒 | 仅比缓存约0.69%改善，不保留 |
+
+- 按类别分组计算输入头仅在验证脚本的临时模型中尝试，虽保留空head梯度连接，mu最大差异仍约6.4969063e-06；不符合本轮严格逐位一致条件，因此弃用候选，正式transformer.py无此修改。这不等于证明微小数值差异一定降低质量，但本轮选择更保守的等价方案。
+- checkpoint写盘实测约0.060–0.061秒/次，远小于训练时间，因此不引入异步写盘，不改变每轮generator.pth及每100轮编号保存策略。
+- 所有未保留候选只存在于已结束的验证进程/脚本，正式训练路径没有pin_memory、异步传输、类别分组或异步保存改动。训练精度、模型结构、batch_size、训练轮数和原bins均不减少。
+- 16batch速度外推完整CESNET3约76.0秒/轮，较既有约207秒/轮显著下降；这不是完整epoch实测，不作为正式完成时间承诺。若速度可持续，剩余951轮纯训练约20.1小时，另计选模和生成。
+
+检查点与后续恢复：
+
+- 原 `log/formal_20261110_v1/source/` 冻结快照、原bins、原始CESNET3输入及第49轮暂停检查点SHA-256均重新校验一致。pause_20261113.json仍为paused，未执行正式续训。
+- 新优化续训快照位于 `log/training_optimization_20261113_v1/resume_source/`，仅覆盖dataset.py和model_train.py，其他模块从暂停任务原快照复制。源码哈希见optimized_resume_manifest.json；不修改旧快照以绕过检查。
+- 新入口 `log/formal_20261110_v1/resume_cesnet3_optimized.py` 已语法检查但未执行，使用已验证缓存版本；仍从原第49轮权重开始第50轮、保留bins和类别映射，完成后才选模生成。原暂停任务未保存Adam/RNG，此已有恢复限制仍存在。
+- 将来明确要求恢复时，推荐使用下列新入口；本次未执行：
+
+```bash
+cd /home/xiaozj/cgan
+setsid -f env CUDA_VISIBLE_DEVICES=1 PYTHONUNBUFFERED=1 /data/xiaozj/anaconda3/envs/exp/bin/python -u log/formal_20261110_v1/resume_cesnet3_optimized.py
+# 恢复后新日志，不覆盖原日志：
+tail -f log/cesnet3_20261113_optimized_resume_v1.log
+```
+
+- 测试进程全部结束后，GPU1显存15MiB、无GPU1计算进程；GPU0原任务未干预。正式队列仍paused，没有完整epoch/CESNET3完整实验或新正式生成产物。
+- 验证结果和日志集中在 `log/training_optimization_20261113_v1/`：summary.json、dataset_summary.json、gpu_summary.json、training_entry_summary.json及各validation日志。3项单元测试、源文件/入口语法检查通过。dataset/test文件diff检查通过；model_train.py的全局diff检查仍提示用户原有beta=0.001行尾空格，该行本次未修改。
+- 保留用户其他修改，未commit或push。
+
+
+## 2026-11-13 beta=0.01 预编码加速新实验：CESNET3-train → CESNET3
+
+- 用户已将主代码beta修改为0.01，本次通过AST核实并保存当前代码快照；要求基于刚验证的加速修改在GPU1依次对cesnet3-train、cesnet3从头训练和生成，不覆盖旧模型或中间文件。
+- 顺序固定：`cesnet3-train` → `cesnet3`；每项分箱、训练、10个checkpoint选模、生成和最终校验全部完成后才进入下一项。仅物理GPU1；GPU0既有PID162927未停止或干预。
+- 超参数：beta=0.01、epoch=1000、batch_size=64、checkpoint=100、max_seq_len=16、expand_times=0、preencode=True。八字段、ChiMerge、KL定义、精度、Adam和checkpoint写盘策略均沿用原正式训练；不使用已弃用的pinned异步传输、类别头分组或异步保存。
+- 新隔离名 `cesnet_beta0_01_fast_20261113_v1`。输出分别为：
+  - `bins/cesnet_beta0_01_fast_20261113_v1/cesnet3-train_0_01/bins_cesnet3-train_0_01.json`
+  - `model/cesnet_beta0_01_fast_20261113_v1/cesnet3-train_0_01/`
+  - `result/cesnet_beta0_01_fast_20261113_v1/cesnet3-train_0_01/`
+  - 第二项使用同层级的 `cesnet3_0_01` 目录和 `bins_cesnet3_0_01.json`。
+- 中间stdout/stderr日志为 `log/cesnet3-train_20261113_v1.log`、`log/cesnet3_20261113_v1.log`，无缓冲合并输出，exclusive创建防覆盖。队列日志为 `log/cesnet_beta0_01_fast_20261113_v1/gpu1.queue.log`。
+- manifest/config/source/status保存于 `log/cesnet_beta0_01_fast_20261113_v1/`。准备阶段完整解析两份数据，核对字段、有限值和非空series，保存输入和14个源码文件SHA-256，语法编译及快照哈希检查通过。明确配置preencode=True，worker只导入本轮快照，不受随后工作区编辑影响。
+- 输入是原始 `data-json/cesnet3-train`（21类167999 flow）、`data-json/cesnet3`（21类209999 flow），通过本轮input符号链接只读访问。无expand，预期各生成相同数量。没有复用旧bins、权重或生成结果，也没有恢复第49轮旧任务。
+- 新目标路径在准备时均不存在，worker使用mkdir(exist_ok=False)，存在则失败；启动从epoch0，无旧checkpoint加载。旧formal_20261105_v2、formal_20261109_v1、formal_20261110_v1及beta对比产物、原日志和暂停检查点全部保留。旧beta=0.001任务仍paused，不修改原恢复入口。
+- 启动前GPU1空闲，磁盘剩余约58GiB。启动于2026-11-13T16:19:14+08:00；队列PID/PGID/SID=166721，初始worker PID=166723。父队列PPID=1，独立session后台运行；GPU1 worker占用约1080MiB，GPU0原任务仍在运行。
+- 首项日志已确认 `No numbered checkpoint found; starting from epoch 0.`、cuda、`Dataset ready: preencode=True, samples=167999, seconds=7.955`，缓存加速已生效。已记录Epoch 1/1000，最近每轮61.94秒。
+- 完成时检查1000条有限损失日志、10个编号checkpoint、类别、JSON解析、生成数、长度和包字段有限值，通过才写completed。checkpoint评估沿用同任务数据目录OT口径，没有额外划分测试集。
+
+运行时间预估（包含分箱、1000轮训练、checkpoint选模及生成；单项耗时不包括等待前序任务）：
+
+| 数据集 | 预计耗时 | 依据 |
+|---|---:|---|
+| cesnet3-train | 17–20小时 | 加速小批次折算约61秒/轮，约16.9小时纯训练，另计约1小时选模及波动 |
+| cesnet3 | 22–26小时 | 小批次折算约76秒/轮，约21.1小时纯训练，另计约1–2小时选模生成及波动 |
+
+- 两项串行，整体约39–46小时。首项预计北京时间2026-11-14 09:19至2026-11-14 12:19完成；整体预计2026-11-15 07:19至2026-11-15 14:19完成。这是基于加速验证的外推，后续以实际epoch耗时和状态更新为准。
+
+启动命令（已执行，不要重复启动）：
+
+```bash
+cd /home/xiaozj/cgan
+setsid -f bash -c 'set -C; exec env CUDA_VISIBLE_DEVICES=1 /data/xiaozj/anaconda3/envs/exp/bin/python -u log/cesnet_beta0_01_fast_20261113_v1/run.py lane 1 > log/cesnet_beta0_01_fast_20261113_v1/gpu1.queue.log 2>&1'
+```
+
+监测命令：
+
+```bash
+cd /home/xiaozj/cgan
+cat log/cesnet_beta0_01_fast_20261113_v1/gpu1.status.json
+tail -f log/cesnet_beta0_01_fast_20261113_v1/gpu1.queue.log
+tail -f log/cesnet3-train_20261113_v1.log
+# 第二项开始后：
+tail -f log/cesnet3_20261113_v1.log
+ps -p 166721 -o pid,ppid,pgid,sid,etime,stat,args
+nvidia-smi
+```
+
+停止指令（先核实PID/PGID和命令仍属于本轮任务；停止当前worker与后续队列）：
+
+```bash
+ps -p 166721 -o pid,pgid,etime,args
+kill -TERM -- -166721
+ps -p 166721 -o pid,pgid,stat,args
+```
+
+- 仍在state-for-codex，用户已有修改保留；未commit或push。本节记录启动成功，不代表完整实验已结束。
+
+- 启动后补核：CESNET3-train已完成Epoch 1/1000，实测61.94秒，NLL/KL/总损失有限，与加速外推约61秒/轮接近；旧beta=0.001暂停状态及检查点哈希再次核实保持不变。
+
+
+## 2026-11-15 beta=0.001 预编码加速 CESNET3 单数据集全新实验
+
+- 用户已将主代码beta设为0.001，要求基于预编码加速修改，仅对完整cesnet3在GPU1从头训练1000 epoch及生成，不覆盖旧输出、不使用旧模型。准备阶段通过AST核实用户赋值并保存当前代码快照，未改用户代码或全局配置。
+- 仅物理GPU1，队列只有cesnet3。参数：beta=0.001、epoch=1000、batch_size=64、checkpoint=100、max_seq_len=16、expand_times=0、preencode=True；八字段、修复后的ChiMerge、KL、Adam及每轮generator.pth/每100轮编号checkpoint策略均保持原先条件。
+- 输入原始data-json/cesnet3，21类209999 flow。完整预检查类别JSON、字段有限值和非空series，保存输入哈希；通过新运行input符号链接只读访问源数据，不读取生成结果作为训练输入。
+- 隔离名cesnet_beta0_001_fast_20261115_v1。全新输出：
+  - `bins/cesnet_beta0_001_fast_20261115_v1/cesnet3_0_001/bins_cesnet3_0_001.json`
+  - `model/cesnet_beta0_001_fast_20261115_v1/cesnet3_0_001/`
+  - `result/cesnet_beta0_001_fast_20261115_v1/cesnet3_0_001/`
+- 中间stdout/stderr无缓冲合并写 `log/cesnet3_20261115_v1.log`；队列管理日志 `log/cesnet_beta0_001_fast_20261115_v1/gpu1.queue.log`。同目录保存run.py、manifest.json、cesnet3.config.json、source/、gpu1.status.json及cesnet3.status.json。
+- 新日志和输出目录在准备时确认不存在，日志exclusive创建、输出mkdir(exist_ok=False)，因此不会覆盖已有文件或续训。14个源码文件语法和哈希检查通过，source中明确包含preencode实现，配置强制preencode=True。
+- 上一轮加速beta=0.01两项已全部completed：cesnet3-train约18.48小时，cesnet3约23.20小时（11月15日10:00结束），原结果/模型均保留；此前formal_20261110_v1 beta=0.001任务仍paused，第49轮检查点哈希核实未变。本次既不使用该暂停权重，也不运行其恢复脚本。
+- 启动前GPU1空闲，GPU0 PID217598有其他计算任务，未干预。磁盘剩余约51GiB。启动于2026-11-15T11:53:49+08:00；队列PID/PGID/SID=220370，worker PID=220372，父队列PPID=1，独立session后台运行。已核实新worker只在GPU1，显存约1098MiB、利用率约96%。
+- 首项日志确认 `No numbered checkpoint found; starting from epoch 0.`、cuda、`Dataset ready: preencode=True, samples=209999, seconds=9.972`；已完成前3轮，最近每轮约77.92秒，NLL/KL/总损失均为有限值。预编码加速已实际生效。
+- 完成时检查1000条有限损失日志、100至1000的10个编号checkpoint、输出类别、JSON解析、无expand生成计数209999、长度及包字段有限值，成功才标记completed。checkpoint选模仍沿用同数据目录的OT评估。
+
+运行时间估计：
+
+- 上轮同CESNET3加速实测：训练约21.92小时，选模约72.9分钟，生成约4.1分钟，总计约23小时12分钟；本轮初始每轮约77–78秒，与该规模接近。
+- 预计本次包含分箱、1000轮训练、10个checkpoint评估及生成共22–26小时。按启动时间估计，约北京时间2026-11-16 09:53至2026-11-16 13:53完成；实际受负载影响，以日志及校验状态为准。
+
+启动命令（已执行，不要重复启动）：
+
+```bash
+cd /home/xiaozj/cgan
+setsid -f bash -c 'set -C; exec env CUDA_VISIBLE_DEVICES=1 /data/xiaozj/anaconda3/envs/exp/bin/python -u log/cesnet_beta0_001_fast_20261115_v1/run.py lane 1 > log/cesnet_beta0_001_fast_20261115_v1/gpu1.queue.log 2>&1'
+```
+
+监测命令：
+
+```bash
+cd /home/xiaozj/cgan
+tail -f log/cesnet3_20261115_v1.log
+cat log/cesnet_beta0_001_fast_20261115_v1/gpu1.status.json
+cat log/cesnet_beta0_001_fast_20261115_v1/cesnet3.status.json
+ps -p 220370 -o pid,ppid,pgid,sid,etime,stat,args
+nvidia-smi
+```
+
+停止指令（先核对PID/PGID与命令仍属于本轮任务）：
+
+```bash
+ps -p 220370 -o pid,pgid,etime,args
+kill -TERM -- -220370
+ps -p 220370 -o pid,pgid,stat,args
+```
+
+- 本节记录从头启动，尚未完成1000 epoch、选模或生成；仍在state-for-codex，未commit或push。
+
+
+## 2026-11-16 beta=0.01 测试子集训练与25份合成数据集
+
+- 用户已将beta改为0.01；本次通过AST核实，使用当前预编码加速代码。输入明确为iscx_test、ssrc_test、mirage-test、utmn-test、cesnet3-test，不使用完整集、train子集或已有生成结果替代。
+- GPU0顺序：iscx_test → ssrc_test → mirage-test → utmn-test；GPU1单独运行cesnet3-test，两条队列独立后台并行。每个输入仅训练一次1000 epoch并选出同一最佳checkpoint，再依次独立调用生成函数expand_times=0、1、2、3、4。总计5次训练、25份合成数据集，不是25次训练。
+- 保持batch_size=64、checkpoint=100、max_seq_len=16、preencode=True，八字段、修复后的ChiMerge、KL/Adam/精度等不变。每个输入从epoch0开始，使用全新模型目录，不加载旧权重。
+- expand_times的语义沿用原代码：0至4分别生成输入数量的1至5倍；每次重新采样生成，五份结果互相独立，不将小集合复制或拼接成大集合。每个输入五份总量为15倍；全部预期总生成790590 flow、25个目录集、385个类别JSON文件。
+- 新隔离名test_beta0_01_20261116_v1，目标在准备时均不存在。分箱 `bins/test_beta0_01_20261116_v1/[数据集]_0_01/bins_[数据集]_0_01.json`，模型 `model/test_beta0_01_20261116_v1/[数据集]_0_01/`。
+- 合成结果为 `result/test_beta0_01_20261116_v1/expand_0/[数据集]_0_01/` 至 `expand_4/[数据集]_0_01/`；各目录含该输入的全部类别JSON。模型和bins只存一份，五个expand共用选出的checkpoint。
+- 日志 `log/[数据集]_20261116_v1.log`，两条队列管理日志位于 `log/test_beta0_01_20261116_v1/gpu0.queue.log` 与gpu1.queue.log。各任务配置、输入/源码哈希、冻结source/及status位于同运行目录。生成期间状态记录active_expand_times及synthetic_sets，每份结果有逐类计数、路径、耗时及validated标记；另写[数据集].synthetic_summary.json。
+- 准备阶段解析全部原始JSON、检查字段与非空series，保存输入及14个代码快照的SHA-256，源文件/包装脚本语法检查通过。五输出包装逻辑用/tmp小规模fixture验证输出目录隔离及1至5倍计数，全部通过。该独立smoke首次遗漏绑定time模块，补齐测试namespace后通过；实际包装脚本本身已有time导入，运行任务未受影响。
+- 每种expand完成后立即重新解析全部输出，校验类别、每类数量=输入*(expand+1)、长度1..16和包字段有限值。每个输入必须5份全部验证通过、1000条有限损失日志及10个编号checkpoint通过，才标记completed。出错即停止对应GPU队列，不跳过失败。
+- 此任务按用户指定在test子集上训练；checkpoint选模仍按原流程使用同输入目录OT比较，未增加独立验证集或重新划分。所有旧模型、结果、日志、原始数据和暂停检查点保留，不覆盖。
+
+| 输入数据集 | GPU | 输入flow | expand 0/1/2/3/4预期各自生成flow | 单项预计耗时 |
+|---|---:|---:|---|---:|
+| iscx_test | 0 | 1,417 | 1417 / 2834 / 4251 / 5668 / 7085 | 7–10分钟 |
+| ssrc_test | 0 | 1,484 | 1484 / 2968 / 4452 / 5936 / 7420 | 7–10分钟 |
+| mirage-test | 0 | 6,795 | 6795 / 13590 / 20385 / 27180 / 33975 | 40–60分钟 |
+| utmn-test | 0 | 1,010 | 1010 / 2020 / 3030 / 4040 / 5050 | 7–10分钟 |
+| cesnet3-test | 1 | 42,000 | 42000 / 84000 / 126000 / 168000 / 210000 | 4.5–5.5小时 |
+
+启动验证与时间估计：
+
+- 启动前两张GPU均空闲，前一轮CESNET3 beta=0.001已于11月16日11:08:34完成。磁盘约49GiB可用，预计本轮模型与25份结果可容纳，未清理其他文件。
+- 启动时间2026-11-16T14:52:38+08:00；GPU0队列PID/PGID/SID=232246，初始worker=232248；GPU1队列PID/PGID/SID=232247，初始worker=232249。父队列PPID=1、独立session，已确认对应worker运行在物理GPU0/1。
+- iscx_test初始实测每轮约0.400秒，cesnet3-test约15.32秒，两者均明确epoch0起步、preencode=True、NLL/KL/总loss有限。显存分别约840/1118MiB，GPU利用率约94%/95%。
+- 上表单项耗时包含1000轮训练、每轮/间隔checkpoint写盘、10个checkpoint选模及五次生成和输出校验，不包含等待同GPU前序任务。小数据集估计需考虑每轮写盘固定成本；MIRAGE/UTMN依据batch数、类别头规模及已验证GPU吞吐推算。
+- GPU0四项预计约61–90分钟，GPU1约4.5–5.5小时；两卡并行，总墙钟预计4.5–5.5小时，约北京时间2026-11-16 19:22至2026-11-16 20:22完成。后续以各数据集实际日志、生成进度与状态为准；本节只证明启动，不代表25份结果已完成。
+
+启动命令（已执行，不要重复启动）：
+
+```bash
+cd /home/xiaozj/cgan
+setsid -f bash -c 'set -C; exec env CUDA_VISIBLE_DEVICES=0 /data/xiaozj/anaconda3/envs/exp/bin/python -u log/test_beta0_01_20261116_v1/run.py lane 0 > log/test_beta0_01_20261116_v1/gpu0.queue.log 2>&1'
+setsid -f bash -c 'set -C; exec env CUDA_VISIBLE_DEVICES=1 /data/xiaozj/anaconda3/envs/exp/bin/python -u log/test_beta0_01_20261116_v1/run.py lane 1 > log/test_beta0_01_20261116_v1/gpu1.queue.log 2>&1'
+```
+
+监测命令：
+
+```bash
+cd /home/xiaozj/cgan
+cat log/test_beta0_01_20261116_v1/gpu0.status.json
+cat log/test_beta0_01_20261116_v1/gpu1.status.json
+tail -f log/test_beta0_01_20261116_v1/gpu0.queue.log log/test_beta0_01_20261116_v1/gpu1.queue.log
+# 根据active切换当前任务日志：
+tail -f log/iscx_test_20261116_v1.log log/cesnet3-test_20261116_v1.log
+cat log/test_beta0_01_20261116_v1/iscx_test.status.json
+ps -p 232246,232247 -o pid,ppid,pgid,sid,etime,stat,args
+nvidia-smi
+```
+
+停止指令（先核实PID/PGID与命令仍属于本轮队列）：
+
+```bash
+ps -p 232246,232247 -o pid,pgid,etime,args
+# 仅GPU0：
+kill -TERM -- -232246
+# 仅GPU1：
+kill -TERM -- -232247
+# 或两条均停止：
+kill -TERM -- -232246 -232247
+```
+
+- 仍在state-for-codex，用户已有代码/笔记本修改保留，未commit或push。
