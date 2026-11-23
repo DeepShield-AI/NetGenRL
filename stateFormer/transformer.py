@@ -20,9 +20,7 @@ class TransGenerator(nn.Module):
         self.embedding_dim = 128
         self.attribute_dim = 64
         self.state_dim = 64
-        self.noise_dim = 32
         self.length_emb_dim = 64
-        self.noise_pos_emb_dim = 16
         self.transformer_layers = 4
 
         # ===== 共享 Embedding =====
@@ -71,34 +69,15 @@ class TransGenerator(nn.Module):
         )
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=self.transformer_layers)
 
-        # ===== 状态头（IB）=====
+        # ===== 状态头（保留重参数化，不施加 KL 约束）=====
         self.state_mu = nn.Linear(self.hidden_dim, self.state_dim)
         self.state_logvar = nn.Linear(self.hidden_dim, self.state_dim)
-  
-        # ===== 噪声头（关键：不依赖历史）=====
-        # self.pos_fc = nn.Sequential(
-        #     nn.Linear(max_seq_len, self.noise_pos_emb_dim),
-        #     nn.ReLU()
-        # )
-        
-        # self.noise_heads = nn.ModuleList([
-        #     nn.Sequential(
-        #         nn.Linear(self.noise_dim + self.length_emb_dim + self.noise_pos_emb_dim, self.noise_dim),  # eps + pos + length
-        #         nn.ReLU()
-        #     ) for _ in range(label_dim)
-        # ])
-        self.noise_heads = nn.ModuleList([
-            nn.Sequential(
-                nn.Linear(self.noise_dim + self.length_emb_dim, self.noise_dim),  # eps + pos + length
-                nn.ReLU()
-            ) for _ in range(label_dim)
-        ])
 
-        # ===== 输出层 =====
+        # ===== 输出层：仅拼接 state 和当前包属性条件 =====
         self.output_layer = nn.ModuleList([
             nn.Sequential(
                 nn.Linear(
-                    self.state_dim + self.noise_dim + self.attribute_dim,
+                    self.state_dim + self.attribute_dim,
                     output_size,
                 ),
                 nn.Identity()
@@ -139,7 +118,7 @@ class TransGenerator(nn.Module):
         hidden = self.transformer(combined_out, mask=mask)
 
         # =====================================================
-        # ✅ 状态（IB）
+        # 状态：训练时继续使用重参数化采样
         # =====================================================
         # mu_all = torch.stack([head(hidden) for head in self.state_mu_heads], dim=1)
         # logvar_all = torch.stack([head(hidden) for head in self.state_logvar_heads], dim=1)
@@ -153,23 +132,6 @@ class TransGenerator(nn.Module):
         std = torch.exp(0.5 * logvar)
         eps_state = torch.randn_like(std)
         s_t = mu + eps_state * std
-
-        # =====================================================
-        # ✅ 噪声（只依赖 t, label, length）
-        # =====================================================
-        eps = torch.randn(B, S, self.noise_dim).to(self.device)
-
-        # pos_norm = (pos_ids.float() / self.max_seq_len).unsqueeze(-1)
-        # length_norm = (length.unsqueeze(1).expand(-1, S) / self.max_seq_len).unsqueeze(-1)
-        # pos_emb_noise = self.pos_fc(pos_ids.float())  # (B, S, noise_pos_emb_dim)
-        # pos_emb_noise_expand = pos_emb_noise.unsqueeze(1).expand(-1, S, -1)
-        # noise_input = torch.cat([eps, length_expand, pos_emb_noise_expand], dim=2)
-        
-        noise_input = torch.cat([eps, length_expand], dim=2)
-
-        noise_all = torch.stack([self.noise_heads[i](noise_input) for i in range(self.label_dim)],dim=1)
-        index_noise = label_int.view(B, 1, 1, 1).expand(-1, 1, S, self.noise_dim)
-        z_t = torch.gather(noise_all, 1, index_noise).squeeze(1)
 
         # ===== attribute =====
         now_emb = torch.cat([self.emb[i](x_now[:, :, i]) for i in range(len(self.x_list) - 1)], dim=2)
@@ -188,7 +150,7 @@ class TransGenerator(nn.Module):
         # ===== decode =====
         preds = []
         for i in range(len(self.x_list)):
-            h = torch.cat([s_t, z_t, attribute_features[i]], dim=2)
+            h = torch.cat([s_t, attribute_features[i]], dim=2)
             out = self.output_layer[i](h.reshape(-1, h.shape[-1]))
             out[:, 0] = torch.finfo(out.dtype).min
             preds.append(F.log_softmax(out, dim=-1))
@@ -199,8 +161,7 @@ class TransGenerator(nn.Module):
             "preds": preds,
             "mu": mu,
             "logvar": logvar,
-            "state": s_t,
-            "noise": z_t
+            "state": s_t
         }
 
     # =====================================================
@@ -246,33 +207,10 @@ class TransGenerator(nn.Module):
 
         return mu[:, -1, :]  # 用均值
     
-    def get_noise(self, label, length, seq_len):
-        B = label.size(0)
-        label_int = torch.argmax(label.clone(), dim=1)
-
-        length_one_hot = F.one_hot((length.clone().detach().long() - 1), num_classes=self.max_seq_len).float().to(self.device)
-        length_out = self.length_fc(length_one_hot)
-        length_expand = length_out.unsqueeze(1).expand(-1, seq_len, -1)
-
-        # pos_ids = torch.arange(seq_len, device=self.device).unsqueeze(0).expand(B, -1)
-        # print(pos_ids.shape)
-        # pos_emb_noise = self.pos_fc(pos_ids.float())  # (B, S, noise_pos_emb_dim)
-        # pos_emb_noise_expand = pos_emb_noise.unsqueeze(1).expand(-1, seq_len, -1)
-
-        eps = torch.randn(B, seq_len, self.noise_dim).to(self.device)
-        # noise_input = torch.cat([eps, length_expand, pos_emb_noise_expand], dim=2)
-        noise_input = torch.cat([eps, length_expand], dim=2)
-
-        noise_all = torch.stack([self.noise_heads[i](noise_input) for i in range(self.label_dim)],dim=1)
-        index_noise = label_int.view(B, 1, 1, 1).expand(-1, 1, seq_len, self.noise_dim)
-        z_t = torch.gather(noise_all, 1, index_noise).squeeze(1)
-
-        return z_t[:, -1, :]  # 返回最后一个时间步的噪声
-
     # =====================================================
     # step（字段生成）
     # =====================================================
-    def step_w_hidden(self, s_t, z_t, x_now, dim_now):
+    def step_w_hidden(self, s_t, x_now, dim_now):
 
         if dim_now > 0 and x_now is not None:
             now_emb = torch.cat([self.emb[i](x_now[:, i]) for i in range(dim_now)], dim=1)
@@ -280,7 +218,7 @@ class TransGenerator(nn.Module):
         else:
             attr = self.pad_embedding.expand(s_t.shape[0], -1)
 
-        h = torch.cat([s_t, z_t, attr], dim=1)
+        h = torch.cat([s_t, attr], dim=1)
         out = self.output_layer[dim_now](h)
         out[:, 0] = torch.finfo(out.dtype).min
 
@@ -302,9 +240,8 @@ class TransGenerator(nn.Module):
                 last = None
                 step_out = []
                 st = self.get_hidden(label, length, x)
-                zt = self.get_noise(label, length, i+1)
                 for j in range(len(self.x_list)):
-                    pred = self.step_w_hidden(st, zt, last, j)
+                    pred = self.step_w_hidden(st, last, j)
                     step_out.append(pred.multinomial(1))
                     last = torch.cat(step_out, dim=1)
                 x = torch.cat([x,last.unsqueeze(1)],dim = 1)
@@ -327,9 +264,8 @@ class TransGenerator(nn.Module):
                 step_out = []
                 last = None
                 st = self.get_hidden(label, length, sam_tensor)
-                zt = self.get_noise(label, length, i+1)
                 for j in range(len(self.x_list)):
-                    pred = self.step_w_hidden(st, zt, last, j)
+                    pred = self.step_w_hidden(st, last, j)
                     step_out.append(pred.multinomial(1))
                     last = torch.cat(step_out, dim=1)
                 # sam_tensor = last

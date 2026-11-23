@@ -1,6 +1,7 @@
+import argparse
 import json
 import os
-from pre_process import pcap_process, ChiMerge,baseline
+from pre_process import ChiMerge, baseline
 from stateFormer import model_train
 from post_process import check_bestmodel, data_save
 
@@ -8,10 +9,11 @@ def check_and_make_forder(folder_path):
     if not os.path.exists(folder_path):
         os.makedirs(folder_path)
 
-def construct_label_dict(pcap_folder, dataset):
+def construct_label_dict(pcap_folder, dataset, sort_labels=False):
     label_dict = {}
     count = 0
-    for filename in os.listdir(f"./{pcap_folder}/{dataset}/"):
+    filenames = os.listdir(f"./{pcap_folder}/{dataset}/")
+    for filename in (sorted(filenames) if sort_labels else filenames):
         # if filename.endswith('.pcap') or filename.endswith('.pcapng'):
         #     label = filename.split('.')[0]
         #     label_dict[label] = count
@@ -24,12 +26,34 @@ def construct_label_dict(pcap_folder, dataset):
         
 
 def driver(config):
-    # with open("./config.json","r") as file:
-    #     config = json.load(file)
-    # print(config)
-    
-    # label_dict = construct_label_dict(config['path']['pcap_folder'],config['path']['dataset'])
-    label_dict = construct_label_dict(config['path']['json_folder'],config['path']['dataset'])
+    method = config.get('binning', {}).get('method', 'chimerge')
+    if method not in ('chimerge', 'equal_width', 'equal_freq'):
+        raise ValueError(f"Unsupported binning method: {method}")
+    if config.get('experiment', {}).get('fresh_start', False):
+        from pathlib import Path
+        paths = config['path']
+        targets = [Path(paths['bins_folder']) / f"bins_{paths['dataset']}.json",
+                   Path(paths['model_folder']) / paths['dataset'],
+                   Path(paths['result_folder']) / paths['dataset']]
+        for target in targets:
+            if target.exists():
+                raise FileExistsError(f"Fresh experiment refuses existing output: {target}")
+    checkpoint = config['model_paras']['checkpoint']
+    epochs = config['model_paras']['epoch']
+    if checkpoint <= 0 or epochs <= 0 or epochs % checkpoint:
+        raise ValueError("epoch must be positive and divisible by checkpoint")
+    seed = config.get('experiment', {}).get('seed')
+    if seed is not None:
+        import random
+        import numpy as np
+        import torch
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+    label_dict = construct_label_dict(config['path']['json_folder'], config['path']['dataset'],
+                                      sort_labels=seed is not None)
     sery_attr_names = list(config['attributes']['sery_attribute'].keys())
     port_attr_names = list(config['attributes']['port_attribute'].keys())
     ip_attr_names = list(config['attributes']['ip_attribute'].keys())
@@ -45,32 +69,16 @@ def driver(config):
     check_and_make_forder(config['path']['result_folder'])
     check_and_make_forder(f"./{config['path']['result_folder']}/{config['path']['dataset']}")
     
-    # print("Processing pcap to json ...")
-    
-    # pcap_process.process_pcap(f"./{config['path']['pcap_folder']}/{config['path']['dataset']}",
-    #                           label_dict,
-    #                           f"./{config['path']['json_folder']}/{config['path']['dataset']}")
-    
-    print("Binning data ...")
-    
-    ChiMerge.chimerge(config['path']['dataset'],
-                      config['path']['json_folder'],
-                      config['path']['bins_folder'],
-                      ip_attr_names,
-                      port_attr_names,
-                      sery_attr_names,
-                      config['model_paras']['max_seq_len'],
-                      param_dicts)
-    
-    # baseline.basemerge(config['path']['dataset'],
-    #                     config['path']['json_folder'],
-    #                     config['path']['bins_folder'],
-    #                     ip_attr_names,
-    #                     port_attr_names,
-    #                     sery_attr_names,
-    #                     config['model_paras']['max_seq_len'],
-    #                     param_dicts)
-    
+    print(f"Binning data: {method} ...")
+    bin_args = (config['path']['dataset'], config['path']['json_folder'],
+                config['path']['bins_folder'], ip_attr_names, port_attr_names,
+                sery_attr_names, config['model_paras']['max_seq_len'], param_dicts)
+    if method == 'chimerge':
+        ChiMerge.chimerge(*bin_args)
+    else:
+        baseline.basemerge(*bin_args, method=method,
+                           bin_counts=config['binning'].get('bin_counts'))
+
     print("Training model ...")
     
     model_train.model_train(label_dict, 
@@ -111,19 +119,17 @@ def driver(config):
                             model_id,
                             config['model_paras']['expand_times'])
 
-def read_config():
-    with open("./config.json","r") as file:
-        config = json.load(file)
-    return config    
+def read_config(path="./config.json"):
+    with open(path, "r") as file:
+        return json.load(file)
+
 
 if __name__ == "__main__":
-    config = read_config()
-    # DATASETS = [
-    #     "ssrc", "ssrc_train"
-    # ]
-    # for dataset in DATASETS:
-    #     print(f"Begin processing dataset: {dataset} ----------------------\n\n")
-    #     config['path']['dataset'] = dataset
-    #     driver(config)
-    #     print(f"Finished processing dataset: {dataset} ----------------------\n\n")
+    parser = argparse.ArgumentParser(description="Binning, training, selection and generation")
+    parser.add_argument("--config", default="config.json")
+    parser.add_argument("--binning-method", choices=("chimerge", "equal_width", "equal_freq"))
+    args = parser.parse_args()
+    config = read_config(args.config)
+    if args.binning_method:
+        config.setdefault('binning', {})['method'] = args.binning_method
     driver(config)

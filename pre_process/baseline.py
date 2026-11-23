@@ -1,139 +1,93 @@
-import numpy as np
+"""Equal-width and quantile baselines sharing the model's bins JSON format."""
 import json
-import scipy.stats as stats
-import os
 import math
+from collections import Counter
+from pathlib import Path
+
+import numpy as np
 from pre_process.ChiMerge import construct_data_dic
 
+DEFAULT_BIN_COUNTS = {
+    "time": 100, "pkt_len": 500, "flags": 10, "ttl": 60,
+    "src_port": 250, "dst_port": 250, "src_ip": 100, "dst_ip": 100,
+}
 
-# =========================
-# 🔧 工具函数（与原代码兼容）
-# =========================
-def flatten_data(data_dic, min_value, max_value):
-    """
-    将 {value: count} 转为展开后的数组（用于等频分箱）
-    """
-    values = []
 
+def value_counts(data_dic, min_value, max_value):
+    counts = Counter()
     for data_list in data_dic.values():
-        for value_dict in data_list:
-            for k, v in value_dict.items():
-                k = min(max(k, min_value), max_value)
-                values.extend([k] * v)
+        for values in data_list:
+            for value, count in values.items():
+                if not math.isfinite(value) or count < 0:
+                    raise ValueError("Binning requires finite values and nonnegative counts")
+                if count:
+                    counts[min(max(value, min_value), max_value)] += count
+    if not counts:
+        raise ValueError("Cannot fit bins to an empty attribute")
+    return counts
 
-    return np.array(values)
+
+def _validate(min_unit, min_value, max_value, num_bins):
+    if not all(math.isfinite(x) for x in (min_unit, min_value, max_value)):
+        raise ValueError("Binning parameters must be finite")
+    if min_unit <= 0 or min_value > max_value:
+        raise ValueError("Invalid binning range or min_unit")
+    if isinstance(num_bins, bool) or not isinstance(num_bins, int) or num_bins <= 0:
+        raise ValueError("num_bins must be a positive integer")
 
 
-# =========================
-# ✅ 方法1：等宽分箱
-# =========================
+def _intervals(edges, min_unit):
+    # Match the existing dataset's two-decimal lookup and first-match boundaries.
+    precision = min(2, max(0, -int(math.floor(math.log10(min_unit)))))
+    edges = sorted(set(round(float(x), precision) for x in edges))
+    if len(edges) == 1:
+        return [[edges[0], edges[0]]]
+    return [[left, right] for left, right in zip(edges, edges[1:])]
+
+
 def cal_bins_equal_width(data_dic, min_unit, min_value, max_value, num_bins=20):
-    """
-    输入输出格式完全兼容 cal_bins
-    """
-    width = (max_value - min_value) / num_bins
-
-    intervals = []
-    precision = max(0, -int(math.log10(min_unit)))
-
-    for i in range(num_bins):
-        left = min_value + i * width
-        right = min_value + (i + 1) * width
-
-        left = round(left, precision)
-        right = round(right, precision)
-
-        if left == right:
-            continue
-
-        intervals.append([left, right])
-
-    return intervals
+    """Split the configured range into at most num_bins rounded intervals."""
+    _validate(min_unit, min_value, max_value, num_bins)
+    return _intervals(np.linspace(min_value, max_value, num_bins + 1), min_unit)
 
 
-# =========================
-# ✅ 方法2：等频分箱
-# =========================
 def cal_bins_equal_freq(data_dic, min_unit, min_value, max_value, num_bins=20):
-    """
-    等频(quantile)分箱
-    """
-    values = flatten_data(data_dic, min_value, max_value)
-
-    if len(values) == 0:
-        return []
-
-    # 分位点
-    quantiles = np.linspace(0, 1, num_bins + 1)
-    bins = np.quantile(values, quantiles)
-
-    # 去重（避免重复边界）
-    bins = np.unique(bins)
-
-    intervals = []
-    precision = max(0, -int(math.log10(min_unit)))
-
-    for i in range(len(bins) - 1):
-        left = round(bins[i], precision)
-        right = round(bins[i + 1], precision)
-
-        if left == right:
-            continue
-
-        intervals.append([left, right])
-
-    return intervals
+    """Linear quantiles equivalent to np.quantile on counts-expanded values."""
+    _validate(min_unit, min_value, max_value, num_bins)
+    counts = value_counts(data_dic, min_value, max_value)
+    values = np.array(sorted(counts), dtype=float)
+    cumulative = np.cumsum([counts[v] for v in values], dtype=np.int64)
+    ranks = np.linspace(0, 1, num_bins + 1) * (int(cumulative[-1]) - 1)
+    low = values[np.searchsorted(cumulative, np.floor(ranks).astype(np.int64), side="right")]
+    high = values[np.searchsorted(cumulative, np.ceil(ranks).astype(np.int64), side="right")]
+    edges = low + (high - low) * (ranks - np.floor(ranks))
+    return _intervals(edges, min_unit)
 
 
-def basemerge(dataset, json_folder, bins_folder, ip_attrs, port_attrs, sery_attrs, max_seq_len, params_dic):
-    
-    json_data_dic = {}
-    for filename in os.listdir(f'./{json_folder}/{dataset}'):
-        with open(f'./{json_folder}/{dataset}/{filename}', 'r') as f:
-            json_data = json.load(f)
-            json_data_dic[filename.split('.')[0]] = json_data
-
-    attr_list = sery_attrs + port_attrs + ip_attrs
-    # max_seq_len = 16
-
-    data_dic = construct_data_dic(json_data_dic, attr_list, port_attrs, ip_attrs, sery_attrs, max_seq_len)
-    # for dic in data_dic['pkt_len']['bittorrent']:
-    #     print(dic)
-    # # print(data_dic['pkt_len']['bittorrent'])
-    # print(params_dic)
-    # exit(0)
-
-    np.set_printoptions(linewidth=2000)
-    
-    result_dic = {}
-    
-    bin_num_dic = {
-        'time':100,
-        'pkt_len': 500,
-        'flags': 10,
-        'ttl': 60,
-        'src_port': 250,
-        'dst_port': 250,
-        'src_ip': 100,
-        'dst_ip': 100,
-    }
-    
-    for label in params_dic.keys():
-        # if label != 'pkt_len':
-        #     continue
-        # merged_intervals,merged_data = cal_bins(data_dic[label],params_dic[label]['min_unit'],params_dic[label]['min_value'],params_dic[label]['max_value'])
-        merged_intervals = cal_bins_equal_width(data_dic[label],params_dic[label]['min_unit'],params_dic[label]['min_value'],params_dic[label]['max_value'],bin_num_dic[label])
-        # merged_intervals = cal_bins_equal_freq(data_dic[label],params_dic[label]['min_unit'],params_dic[label]['min_value'],params_dic[label]['max_value'])
-        print(label,':', len(merged_intervals))
-        for i in range(len(merged_intervals)):
-            merged_intervals[i] = [round(merged_intervals[i][0],2),round(merged_intervals[i][1],2)]
-            if i == 0:
-                continue
-            if merged_intervals[i][0] > round(merged_intervals[i-1][1] + params_dic[label]['min_unit'],2):
-                merged_intervals[i][0] = round(merged_intervals[i-1][1] + params_dic[label]['min_unit'],2)
-        # result_dic[label] = {'intervals':merged_intervals,'data':merged_data.tolist()}
-        result_dic[label] = {'intervals':merged_intervals}
-    
-    json_str = json.dumps(result_dic)
-    with open(f'./{bins_folder}/bins_{dataset}.json', 'w') as file:
-        file.write(json_str)
+def basemerge(dataset, json_folder, bins_folder, ip_attrs, port_attrs, sery_attrs,
+              max_seq_len, params_dic, method="equal_width", bin_counts=None):
+    methods = {"equal_width": cal_bins_equal_width, "equal_freq": cal_bins_equal_freq}
+    if method not in methods:
+        raise ValueError(f"Unsupported baseline method: {method}")
+    counts = dict(DEFAULT_BIN_COUNTS)
+    counts.update(bin_counts or {})
+    attrs = sery_attrs + port_attrs + ip_attrs
+    if list(params_dic) != attrs:
+        raise ValueError("Attribute and bin parameter orders must match")
+    for attr in attrs:
+        _validate(**params_dic[attr], num_bins=counts[attr])
+    json_data = {}
+    for path in sorted((Path(json_folder) / dataset).glob("*.json")):
+        json_data[path.name.split(".")[0]] = json.loads(path.read_text())
+    data = construct_data_dic(json_data, attrs, port_attrs, ip_attrs, sery_attrs, max_seq_len)
+    result = {}
+    for attr in attrs:
+        # Validate even equal-width inputs; an empty attribute is an input error.
+        value_counts(data[attr], params_dic[attr]["min_value"], params_dic[attr]["max_value"])
+        intervals = methods[method](data[attr], **params_dic[attr], num_bins=counts[attr])
+        print(f"{method} {attr}: requested={counts[attr]}, actual={len(intervals)}")
+        result[attr] = {"intervals": intervals}
+    output = Path(bins_folder) / f"bins_{dataset}.json"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(result, allow_nan=False))
+    return result

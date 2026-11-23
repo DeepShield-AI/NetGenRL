@@ -16,7 +16,7 @@
 
 必须严格遵守：
 
-1. 当前工作分支为 `state-for-codex`。
+1. 当前工作分支为 `bin-exp`。
 2. **禁止切换 Git branch。**
 3. **禁止修改其他 branch。**
 4. **禁止 checkout、reset、rebase、merge 或其他可能影响其他 branch 的操作。**
@@ -25,7 +25,7 @@
 7. **禁止向任何远程仓库 push、提交或修改远程分支。**
 8. 不要执行可能破坏工作区的 Git 操作。
 9. 修改前后应检查 `git status`，确保只产生任务要求的修改。
-10. 如果发现当前 branch 不是 `state-for-codex`，**停止并报告，不要自行切换。**
+10. 如果发现当前 branch 不是 `bin-exp`，**停止并报告，不要自行切换。**
 11. 工作的conda环境为`exp`环境
 
 ---
@@ -242,7 +242,7 @@ stateFormer/model_train.py
 2. State 的 KL loss。
 3. padding 通过 mask 排除。
 4. label weight 用于加权。
-5. 当前 KL 系数为 `beta = 0.1`。
+5. 当前 KL 系数为 `beta = 0.01`。
 
 修改 loss 时必须明确检查：
 

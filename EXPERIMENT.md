@@ -1194,3 +1194,577 @@ kill -TERM -- -232246 -232247
 ```
 
 - 仍在state-for-codex，用户已有代码/笔记本修改保留，未commit或push。
+
+## 2026-11-17 等宽/等频分箱接入与正式实验准备（未启动）
+
+- 用户授权修改接入代码，beta保留0.01；指定iscx、ssrc、mirage、utmn、cesnet3，不使用对应训练集。正式实验不启动；测试仅使用GPU0。
+- 当前分支bin-exp；保留用户已有AGENT.md修改。本轮未修改模型结构、model_train.py、loss、全局config.json或原始数据。
+- driver.py新增--config和--binning-method，按binning.method选择chimerge/equal_width/equal_freq；缺省仍为ChiMerge。移除未使用的PCAP导入。新配置固定随机种子及排序后的类别映射，既有无seed配置沿用原类别枚举方式。
+- baseline.py统一两方法的字段箱数配置，等频按累计计数计算线性分位点，无需展开重复样本；处理常量和舍入后的重复边界，空输入明确报错。保留原编码的共享边界首次匹配、1..N真实ID及现有反分箱语义。
+- 正式配置仅准备在configs/binning_20261117_v1/，五输入×两方法共10份。八字段、max_seq_len=16、batch_size=64、epoch=1000、checkpoint=100、expand_times=1（2倍生成量）、preencode=true、seed=20261117；beta=0.01仍由未改动的训练代码提供。
+- 两种方法共用配置范围和箱数上限：time100、pkt_len500、flags10、ttl60、src/dst_port各250、src/dst_ip各100。等宽固定配置范围；等频数据裁剪后计算分位点，重复值可能使实际箱数减少。逐包字段取前16包、meta每flow统计一次。
+- bins/model/result分别隔离在各自binning_20261117_v1/方法/目录。fresh_start=true在任何分箱/训练前拒绝已有目标文件或目录，不自动续训。10项正式输出路径检查均未存在；未创建正式bins/model/result、后台队列或GPU分配。
+- 语法解析、git diff --check、配置数量/输入目录/参数校验通过。100组等频计数结果与NumPy展开样本quantile对照通过，常量字段、等宽边界、空输入检查通过。
+- 沙箱GPU不可见后，经宿主执行在物理GPU0（NVIDIA GeForce RTX 3080）运行validation/smoke_binning.py：五数据集×两方法共10项，每项2类×2条真实flow、batch4、仅1轮。训练、选模、生成、JSON有限值、生成计数/长度、真实ID/padding以及fresh-start重复输出拒绝均通过，进程正常退出。限定测试使用配置副本，正式epoch不变；临时输入、bins、checkpoint及生成结果自动清理。
+- 本次没有正式训练结果，未启动任何正式实验。使用方式、分箱语义及限制见configs/binning_20261117_v1/README.md。
+
+## 2026-11-17 双GPU等频/等宽正式基线（后台运行）
+
+- 用户明确授权后台正式运行。物理GPU0=等频(equal_freq)，物理GPU1=等宽(equal_width)；两卡各自固定顺序 `iscx → ssrc → mirage → utmn → cesnet3`，只使用完整命名输入，不使用对应train子集。每项完整完成分箱→训练→10个checkpoint选模→生成→结果校验后才进入下一项；单项失败停止本GPU队列，另一队列独立继续。
+- 新运行名 `binning_formal_20261117_v1`。独立配置、冻结源码、输入/源码/配置SHA-256和逐类flow数保存于 `log/binning_formal_20261117_v1/manifest.json`、`source/`、`[方法]_[数据集].config.json`。本轮配置从准备版复制，显式改为epoch=1000、expand_times=0（按输入逐类生成1倍flow）；batch_size=64、checkpoint=100、max_seq_len=16、preencode=true、seed=20261117，八字段，beta=0.01，模型结构及loss未变。全局config与先前准备版配置未修改。
+- 逐文件解析、非空flow、字段有限值和输入哈希检查已通过：iscx 10类6781 flow、ssrc 9类7426、mirage 20类33975、utmn 17类5057、cesnet3 21类209999。worker在开始前再次核对输入、源码及配置哈希；不加载旧模型、不覆盖旧输出。
+- 全新输出：`bins/binning_formal_20261117_v1/[方法]/[数据集]/bins_[数据集].json`；`model/binning_formal_20261117_v1/[方法]/[数据集]/`；`result/binning_formal_20261117_v1/[方法]/[数据集]/`。分箱方法/字段箱数及配置范围沿用本轮已验证接入。目标存在即报错；未复用11月3日实验配置或产物。
+- 各任务stdout/stderr合并且无缓冲写入新日志 `log/binning_formal_20261117_v1/[方法]_[数据集].log`，exclusive创建防止覆盖；每项阶段、耗时、最佳epoch、校验计数及失败原因写入同名`.status.json`。两条队列日志 `gpu0.queue.log`、`gpu1.queue.log`，队列状态 `gpu0.status.json`、`gpu1.status.json`。
+- 启动：北京时间2026-11-17 16:09:52。GPU0 lane PID/PGID/SID=262392，worker=262394；GPU1 lane PID/PGID/SID=262393，worker=262395。lane PPID=1、独立会话；worker与所属lane同PGID。nvidia-smi核实worker262394在GPU0（UUID GPU-1f72e708-dcfc-5400-3a85-e61d6272edc1，858MiB），worker262395在GPU1（UUID GPU-dd306551-104a-e6e1-34ec-1c79160bbe17，864MiB）。启动前两卡无计算进程，剩余磁盘约52GiB。
+- 启动核实两项ISCX均从epoch0开始、preencode=true、设备cuda；已超过第5轮且loss/NLL/KL有限，初始稳定每轮约1.88–1.90秒（日志内计时不含随后checkpoint保存）。这是启动证据，不代表任何正式任务已完成。
+
+### 耗时预估（两方法分别适用）
+
+| 数据集 | GPU0等频单项耗时 | GPU1等宽单项耗时 | expand=0各自产生flow |
+|---|---:|---:|---:|
+| iscx | 30–45分钟 | 30–45分钟 | 6781 |
+| ssrc | 35–50分钟 | 35–50分钟 | 7426 |
+| mirage | 3–5小时 | 3–5小时 | 33975 |
+| utmn | 30–45分钟 | 30–45分钟 | 5057 |
+| cesnet3 | 20–27小时 | 20–27小时 | 209999 |
+
+- 单项包含分箱、1000轮训练、每轮/间隔保存、10个checkpoint选模、生成及校验，不包含在本GPU队列中等待前序项的时间。每条队列合计约24.6–34.4小时；两卡并行总墙钟约25–35小时，预计北京时间2026-11-18 17:10至2026-11-19 03:10全部完成，非时间保证。
+- 依据本轮ISCX初始实测、当前batch数/类别头规模外推，以及近期同八字段/预编码CESNET3实测总耗时23.20小时（训练21.92小时、选模72.9分钟、生成4.1分钟，见log/cesnet_beta0_01_fast_20261113_v1/cesnet3.status.json）。两种分箱的实际词表不同，两卡并行的CPU/磁盘竞争也会影响耗时；目前没有本轮完整数据集的实测时间，因此给两方法相同的宽区间，后续按日志重算。初始依据保存在initial_eta.json。未使用11月3日基线耗时。
+
+### 监控指令
+
+在 `/home/xiaozj/cgan` 下执行：
+
+```bash
+/data/xiaozj/anaconda3/envs/exp/bin/python log/binning_formal_20261117_v1/run.py status
+cat log/binning_formal_20261117_v1/gpu0.status.json
+cat log/binning_formal_20261117_v1/gpu1.status.json
+tail -f log/binning_formal_20261117_v1/gpu0.queue.log log/binning_formal_20261117_v1/gpu1.queue.log
+# 初始两任务；后续按队列status中的active替换日志名
+tail -f log/binning_formal_20261117_v1/equal_freq_iscx.log log/binning_formal_20261117_v1/equal_width_iscx.log
+nvidia-smi
+```
+
+全部完成以两份lane状态为completed、各自completed包含5项，并且10份case状态为completed为准。worker仅在完整1000条有限epoch日志、10个编号checkpoint、全部结果JSON可解析、逐类数量/每flow长度与输入匹配、字段有限值校验成功后写completed；不能只看GPU占用或checkpoint推断完成。
+
+### 停止指令
+
+分别停止对应整条队列（立即终止当前worker，不启动后续项，保留已写入的模型/分箱/结果/日志）：
+
+```bash
+# 停止GPU0等频队列
+/data/xiaozj/anaconda3/envs/exp/bin/python log/binning_formal_20261117_v1/run.py stop 0
+# 停止GPU1等宽队列
+/data/xiaozj/anaconda3/envs/exp/bin/python log/binning_formal_20261117_v1/run.py stop 1
+# 然后确认状态和GPU释放
+/data/xiaozj/anaconda3/envs/exp/bin/python log/binning_formal_20261117_v1/run.py status
+nvidia-smi
+```
+
+停止入口会核对PID的启动标识、完整脚本路径、lane参数及PGID，防止PID复用误停其他任务；向lane发送SIGTERM，由lane终止其worker，15秒未退出则强制结束worker。停止不会额外保存正在计算的半轮，现有checkpoint仅包含模型权重，不包含Adam/RNG。不要重复launch同一运行目录，也不要用泛化pkill停止其他实验。
+
+## 2026-11-18 ChiMerge去除threshold_merge的CPU分箱对照（已完成，未训练）
+
+- 用户要求检查去除threshold_merge的影响，只运行预处理，不训练、不使用GPU；现有GPU任务未停止或改动。
+- pre_process/ChiMerge.py的cal_bins_one_category、cal_bins、chimerge新增use_threshold_merge=True参数，默认保持原算法；False直接将初始区间交给chi_merge。仅绕过低频预合并，alpha=0.01、df计算、整数网格、类别间整合及最终边界后处理保持原实现。
+- 新增独立CPU脚本pre_process/compare_chimerge_threshold.py，无torch/driver/model导入，强制CUDA_VISIBLE_DEVICES=-1、BLAS/OMP/MKL单线程。输入为原始data-json/{iscx,ssrc,mirage,utmn,cesnet3}；八字段、前16包、当前config.json属性范围与min_unit，两方案在同输入重新拟合。未调用训练入口或生成模型。
+- 新运行名chimerge_threshold_ablation_20261118_v1。10份完整bins位于bins/chimerge_threshold_ablation_20261118_v1/{original,no_threshold}/bins_[数据集].json；未覆盖旧bins。逐次日志、配置、脚本/源码快照、输入哈希、耗时、警告、summary位于log/chimerge_threshold_ablation_20261118_v1/。
+- 结果：ISCX总箱数1627→3027（1.860倍）、SSRC687→976（1.421倍）、MIRAGE4801→6787（1.414倍）、UTMN1792→3647（2.035倍）、CESNET3 3344→4433（1.326倍）。时间字段依次245→751、480→754、565→2190、124→541、657→1681。并非所有字段都增加，例如MIRAGE目的IP1833→1571、UTMN TTL75→62；预合并会影响后续贪心合并路径，不能将新结果当成对旧箱的严格细分。
+- 原版/去预合并分箱实际CPU耗时（秒）：ISCX2.27/5.57、SSRC0.96/2.69、MIRAGE5.90/22.99、UTMN0.35/0.72、CESNET3 5.57/5.87；仅为分箱函数时间，不含报告统计及其输入扫描。
+- 验证：默认路径与修改前冻结实现的类别级及整合级fixture输出一致；禁用路径通过替换threshold_merge为报错函数验证未调用它。语法/diff检查通过。10份输出每份8字段，端点均有限；40项对照无倒置区间、无观测重叠、无边界兜底后不可编码内部空隙。原始范围外观测一致：ISCX time11次、SSRC time29次、UTMN pkt_len841次，沿用首末箱兜底。chi_cal既有零期望除法warning在两种方案均出现，本次未改变统计量或修复该警告。
+- 统计包括逐字段箱数、单点箱、空箱、宽度中位数/P90/最大值、最大箱占比、范围外/内部空隙/重叠观测。meta占用每flow一次，序列字段按保留packet统计。报告log/chimerge_threshold_ablation_20261118_v1/REPORT.md，机器可读comparison.csv/comparison.json。status.json=completed，5数据集、40项字段对照；没有本轮model/result目录。
+- 本次只比较离散化结果，尚不能据此判断模型生成质量或下游性能。
+
+复现需选择新运行名，避免覆盖已保存结果（CPU-only）：
+
+```bash
+CUDA_VISIBLE_DEVICES=-1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 /data/xiaozj/anaconda3/envs/exp/bin/python -u pre_process/compare_chimerge_threshold.py --run-id chimerge_threshold_ablation_20261118_v2
+```
+
+## 2026-11-18 GPU1等待当前队列后训练去threshold_merge基线（已后台排队）
+
+- 用户授权：基于已完成的no_threshold分箱，对iscx、ssrc、mirage、utmn、cesnet3进行训练与生成，使用GPU1，等待当前任务结束，不干预当前任务，不覆盖旧产物。
+- 新运行名chimerge_no_threshold_train_20261118_v1。顺序`iscx → ssrc → mirage → utmn → cesnet3`；每项1000 epoch、batch_size=64、checkpoint=100、max_seq_len=16、expand_times=0（逐类生成输入1倍flow）、preencode=true、seed=20261117、beta=0.01。只使用完整命名数据集，不使用train子集。未改模型或loss代码。
+- 使用bins/chimerge_threshold_ablation_20261118_v1/no_threshold/bins_[数据集].json的精确副本，独立保存到bins/chimerge_no_threshold_train_20261118_v1/bins_[数据集].json；5份SHA-256逐一一致，总箱数依次3027、976、6787、3647、4433。worker直接调用训练、选模、生成函数，完全跳过重新分箱，避免driver重写bins。
+- 训练模型写入model/chimerge_no_threshold_train_20261118_v1/[数据集]/，生成JSON写入result/chimerge_no_threshold_train_20261118_v1/[数据集]/；目标目录存在即失败，日志exclusive创建，不自动复用旧checkpoint。旧分箱、旧模型、旧结果、旧日志均保留。
+- 新日志/状态/配置/清单/冻结源码统一在log/chimerge_no_threshold_train_20261118_v1/：gpu1.queue.log、gpu1.status.json、[数据集].log、[数据集].status.json、[数据集].config.json、manifest.json、source/。清单含输入/分箱/配置/源码哈希、类别计数及截断长度；输入与CPU分箱比较时哈希一致。新队列开始每项前再次验证这些哈希。
+- 依赖是当前binning_formal_20261117_v1的GPU1整条等宽队列，原lane PID262393/start_ticks120945199。新队列每30秒检查：原队列身份未变、状态completed且5项completed齐全、5份case状态均completed、原lane对应进程已退出、nvidia-smi只读查询GPU1无计算进程。全部满足才开始训练；原队列failed/stopped或GPU1另有任务时继续等待。不会以epoch1000、checkpoint存在或GPU瞬时空闲替代完成判定。
+- 等待进程在依赖放行前不导入torch/模型，不做CUDA可用性探测，不创建CUDA上下文。GPU0不属于本队列；原GPU0/1进程均不发信号、不改文件。单项训练/选模/生成/校验失败会停止新队列后续项。
+- CPU测试覆盖：前序running/failed/stopped不放行且不调用GPU查询；前序completed但进程仍存活不放行；GPU1有计算进程不放行；仅GPU0活动时允许GPU1开始。配置、源码及分箱哈希、全新模型/结果/任务日志路径和语法检查均通过。本次没有为验证而提前在GPU上训练。
+- 后台等待进程于北京时间2026-11-18 15:27:14启动，PID/PGID/SID=271940、PPID=1，独立会话。启动核实status=waiting、active=null、wait_reason=predecessor status=running；原GPU1仍为equal_width_cesnet3，worker266121。nvidia-smi仅显示原GPU0 worker266216和GPU1 worker266121，新等待进程没有GPU显存。本节只表示已排队，尚未训练新基线。
+- 新队列只有在完整1000轮有限日志、10份编号checkpoint、全部类别结果JSON数量/长度/字段有限值校验通过后才将单项标为completed；现有checkpoint仍只保存模型权重。
+
+监控新队列（在/home/xiaozj/cgan执行）：
+
+```bash
+/data/xiaozj/anaconda3/envs/exp/bin/python log/chimerge_no_threshold_train_20261118_v1/run.py status
+cat log/chimerge_no_threshold_train_20261118_v1/gpu1.status.json
+tail -f log/chimerge_no_threshold_train_20261118_v1/gpu1.queue.log
+# 依赖放行且iscx开始后才会创建此任务日志
+tail -f log/chimerge_no_threshold_train_20261118_v1/iscx.log
+```
+
+取消等待或停止本新队列（只核对并停止本运行的lane；不会停止前序等宽队列）：
+
+```bash
+/data/xiaozj/anaconda3/envs/exp/bin/python log/chimerge_no_threshold_train_20261118_v1/run.py stop 1
+```
+
+stop核对新lane脚本路径、参数、PID启动标识及PGID；等待期间只停止等待器，训练开始后还会停止其当前worker并禁止后续项，保留所有已写文件。不要重复launch此运行目录。
+
+## 2026-11-18 恢复主代码原始ChiMerge
+
+- 用户要求恢复原先ChiMerge方法。pre_process/ChiMerge.py已逐字节恢复到HEAD及此前原版冻结实现，移除use_threshold_merge开关，重新固定执行threshold_merge→chi_merge。
+- 分箱对比脚本改为显式加载已保存的消融源码快照log/chimerge_threshold_ablation_20261118_v1/ChiMerge.py，保留历史对照可复现性，主ChiMerge不再承担消融开关。
+- CPU检查确认主路径实际调用threshold_merge，独立冻结消融路径仍支持开关；语法和diff检查通过。没有重新分箱或训练。
+- 未改动历史bins/模型/结果/日志或后台进程。已排队去threshold_merge训练仍按此前授权使用其独立冻结代码和分箱；本次恢复主文件不取消该队列。
+
+## 2026-11-18 主模型移除KL损失贡献和独立noise分支（仅代码修改，未运行）
+
+- 用户明确授权直接修改为NLL-only、无noise_head输入，输出只拼接state与属性条件；要求不运行实验。
+- stateFormer/model_train.py删除beta、KL计算及KL日志字段，总损失直接为g_loss=nll_loss。原字段平均NLL、padding mask、安全target、类别权重、Adam及保存策略保持原实现。
+- stateFormer/transformer.py删除noise_heads、noise维度、独立噪声采样及get_noise；forward和step_w_hidden仅拼接64维state和64维属性条件，输出层Linear输入由160维变为128维；sample的无前缀/有前缀两条路径均同步移除noise调用和参数。forward返回preds/mu/logvar/state，不再返回noise。
+- 保留state_mu/state_logvar及训练时s_t=mu+eps_state*std，生成get_hidden仍使用mu；Transformer、长度/类别条件、字段自回归和真实ID/padding机制不变。
+- 检查训练、checkpoint选择和最终生成均导入同一stateFormer.transformer.TransGenerator，其构造接口及sample接口未变，后处理无需修改。新结构的输出层宽度和参数集不同，原带noise checkpoint不能直接加载到此主实现；后续新实验需独立模型目录并从头训练。
+- 仅执行AST语法/结构检查、调用参数检查和git diff --check：确认无noise分支残留、两条sample路径一致、唯一g_loss赋值为nll_loss、state重参数化保留。没有导入或执行模型，没有forward/backward、训练、采样、GPU操作或新实验。
+- 用户已有AGENT.md和其他未提交修改保留。本轮不修改AGENT.md；其中原架构/noise/KL说明与本次主代码消融不同，以本条及当前代码为准。newTransformer.py、配置、分箱、历史结果均未修改。
+- 两条既有运行binning_formal_20261117_v1及chimerge_no_threshold_train_20261118_v1的冻结源码SHA-256重新核对未变；本次未向后台进程发信号、未修改其快照/配置/分箱/日志，因此原实验仍使用原KL/noise实现。
+
+## 2026-11-18 GPU0完整ChiMerge＋无KL/无独立noise模型（已后台排队）
+
+- 用户授权在GPU0等待当前任务结束后，对iscx、ssrc、mirage、utmn、cesnet3运行完整ChiMerge及当前NLL-only/no-noise-head模型，不影响当前任务，不覆盖旧产物。
+- 新运行名chimerge_no_kl_no_noise_20261118_v1；GPU0依次`iscx → ssrc → mirage → utmn → cesnet3`。沿用1000 epoch、batch_size=64、checkpoint=100、max_seq_len=16、expand_times=0、preencode=true、seed=20261117；使用完整命名数据集，不使用对应训练集子目录。总损失仅NLL，独立noise_heads/get_noise已移除，输出仅拼接64维state＋64维属性条件；state重参数化训练、生成使用mu保持当前实现。
+- 当前完整ChiMerge和模型/训练/选模/生成源码均冻结在log/chimerge_no_kl_no_noise_20261118_v1/source/，按哈希检查；5份独立config、原始输入哈希/类别计数/截断长度、依赖身份及代码哈希见manifest.json。未使用GPU1去threshold_merge队列的模型或分箱。
+- GPU0依赖为binning_formal_20261117_v1的原等频整条队列（lane PID262392、start_ticks120945199）：要求同一身份、队列及全部5份case均completed、5项completed列表齐全、lane进程已退出，以及nvidia-smi只读确认GPU0无计算进程。每30秒检查；running/failed/stopped、进程未退出或GPU0有其他任务均继续等待。GPU1任务或其等待器不属于本队列，不修改、不发信号。
+- 后台等待器不导入torch/模型、不探测CUDA或分配显存。放行后，每项先使用冻结完整ChiMerge重新拟合（包含threshold_merge→chi_merge），再训练→10个checkpoint选模→生成→结果校验。完整bins还与此前CPU对照的original bins逐字段比对；reference_bins/为独立核对副本，并非直接用它替代本轮分箱。新bins在训练/生成前后核对哈希。
+- 新输出：bins/chimerge_no_kl_no_noise_20261118_v1/bins_[数据集].json；model/chimerge_no_kl_no_noise_20261118_v1/[数据集]/；result/chimerge_no_kl_no_noise_20261118_v1/[数据集]/。模型从epoch0起步，不加载旧checkpoint；已有目标文件/目录即报错。新日志log/chimerge_no_kl_no_noise_20261118_v1/[数据集].log以exclusive模式创建，任务状态[数据集].status.json，队列日志/状态gpu0.queue.log和gpu0.status.json。
+- CPU依赖逻辑测试通过：前序running/failed/stopped或进程未退出均不放行且不调用GPU查询；GPU0忙继续等待，GPU1单独忙不阻止GPU0。5份配置、全部冻结源码/参考bins哈希、全新输出路径、模型静态结构和语法检查通过。没有在原任务完成前执行模型或GPU smoke。
+- 新等待器于北京时间2026-11-18 15:42:21启动，PID/PGID/SID=272892、PPID=1。核实status=waiting、active=null、beta=0、use_noise=false、wait_reason=predecessor status=running。原GPU0等频CESNET3仍运行（worker266216，核实时epoch787/1000）；GPU1原worker266121及其独立等待器271940保持。nvidia-smi只显示原GPU0/1 worker，新等待器没有显存分配。
+- 单项成功须完整1000轮有限loss日志、10个编号checkpoint、逐类JSON生成数量为输入1倍、长度与输入前16包匹配、字段有限值检查全部通过。失败停止本队列后续项并保留文件；当前已排队不代表新模型训练已开始或完成。
+
+监控GPU0新队列（在/home/xiaozj/cgan下）：
+
+```bash
+/data/xiaozj/anaconda3/envs/exp/bin/python log/chimerge_no_kl_no_noise_20261118_v1/run.py status
+cat log/chimerge_no_kl_no_noise_20261118_v1/gpu0.status.json
+tail -f log/chimerge_no_kl_no_noise_20261118_v1/gpu0.queue.log
+# 放行、ISCX任务开始后才创建单项日志
+tail -f log/chimerge_no_kl_no_noise_20261118_v1/iscx.log
+```
+
+取消等待或停止本新队列：
+
+```bash
+/data/xiaozj/anaconda3/envs/exp/bin/python log/chimerge_no_kl_no_noise_20261118_v1/run.py stop 0
+```
+
+该停止入口验证本运行的脚本路径、lane参数、PID启动标识及PGID；等待期只停止本等待器，训练期终止其worker并禁止后续项，保留已写文件；不会停止前序等频队列或GPU1实验。不要重复launch本运行目录。
+
+## 2026-11-20 原版模型32/64包实验预检查（未启动正式实验）
+
+- 用户仅授权检查ISCX、SSRC、MIRAGE、UTMN数据长度与训练资源，拟GPU0最大32包、GPU1最大64包并行。未开始训练、选模或生成；主代码仍保留现有无KL/no-noise修改，没有恢复覆盖主代码或更改任何旧实验。
+- 原版参照log/binning_formal_20261117_v1/source/：完整ChiMerge（包含threshold_merge）、noise_heads存在、beta=0.01、state64/noise32、hidden512、4层8头。AST核对beta与noise分支。GPU仅通过nvidia-smi只读查询，没有CUDA上下文、模型前向或反向。
+- CPU统计原始JSON完整流长度（非16包截断长度）：ISCX6781 flow，>=32有821（12.11%）、>=64有647（9.54%）、最长858740；SSRC7426 flow，>=32有1264（17.02%）、>=64有338（4.55%）、最长27083；MIRAGE33975 flow，>=32有15075（44.37%）、>=64有9401（27.67%）、最长300；UTMN5057 flow，>=32有1317（26.04%）、>=64有884（17.48%）、最长300。
+- ISCX/MIRAGE/UTMN的每个类别均有>=32和>=64的流。SSRC没有>=32流的类别为bruteforce_dns、ddos_ack、ddos_dns；没有>=64流的类别还包括ddos_syn。最大长度实验应保留所有短流并padding/mask，不能为凑32/64包而删除类别/样本。
+- 为评估真实词表规模，仅CPU重新拟合32/64包原版ChiMerge，结果隔离于log/length_precheck_20261120_v2/length_{32,64}/bins/，不是正式训练产物。八字段总箱数（32/64）：ISCX1637/1590、SSRC637/608、MIRAGE5110/5037、UTMN1791/1683。拟合均完成，没有词表膨胀；记录现有chi_cal零期望除法warning，不修改统计量。
+- 原版模型只在PyTorch meta设备构造以统计参数，无权重存储分配或数据计算，并确认torch.cuda.is_initialized()==False。MIRAGE最大约25.62M参数；FP32参数+梯度+Adam两组状态合计约390.9MiB。batch64、长度64下，MIRAGE单份log-prob张量约78.8MiB，单份全类别hidden输出160MiB，4层单份FFN隐藏张量合计128MiB，4层注意力矩阵合计32MiB；这些是主要组成的静态大小，并非完整反向传播/分配器/工作区峰值。
+- Dataset CPU预编码缓存最大为MIRAGE长度64约135.6MiB。主机约62GiB RAM，可用约57GiB。磁盘剩余约31GiB；按每项1000epoch、checkpoint100、最终权重+10个编号权重估算，8项权重裸张量合计约7.03GiB，另需结果JSON/临时写盘/日志，建议预留至少10–12GiB。本次仅沿用这些条件估算，没有创建正式配置或输出队列。
+- GPU只读采样：两张RTX3080各10240MiB；GPU0 used83/free9786MiB，GPU1 used15/free9861MiB，均无计算进程，温度50/48℃。此前两条消融队列状态均completed，未对进程发信号。
+- 判断：数据允许两种长度实验，当前静态规模和CPU/磁盘资源没有明显硬性阻断；显卡容量具备可行性，但尚未实测32/64包训练峰值，不能保证正式batch64安全。64包相对16包，线性激活约4倍、显式注意力矩阵约16倍；正式启动前需另行授权有界、逐级GPU显存验证，尤其不能把历史16包显存采样当作本轮峰值。不能将原始最大流长度用于张量分配，应固定截断32/64；后续从头训练，不加载16包checkpoint。
+- 完整逐类长度、直方图、8组箱数/参数/张量大小、原版源码哈希及机器资源见log/length_precheck_20261120_v2/report.json；CPU预检查脚本副本precheck_cpu.py。最初v1增量JSON读取在超长流上耗时异常，仅停止该CPU读取器，改逐类别文件解析完成v2；v1标为aborted_cpu_reader。没有启动GPU实验或影响其他任务。
+
+## 2026-11-20 原版模型32/64包有界GPU验证（8项通过，未启动完整实验）
+
+- 用户授权仅小规模可控GPU验证，不运行完整实验。GPU0验证max_seq_len=32，GPU1验证64，分别覆盖ISCX、SSRC、MIRAGE、UTMN。使用独立log/length_gpu_smoke_20261120_v1/source/冻结原版：完整ChiMerge预检查bins、noise_heads存在、KL beta=0.01、FP32、Adam(lr1e-4,betas0.5/0.999)。主工作区无KL/no-noise模型未改动。
+- 数据来自原始data-json，每类最多2条>=64包真实flow及1条<32包短flow，CPU截断最多64包，保留完整类别映射和原始32/64分箱词表。实际样本数ISCX30、SSRC19、MIRAGE60、UTMN51，不读取生成结果作为训练输入。每个batch档使用重复采样的真实满长度flow，避免用padding导致显存低估。
+- batch按1→2→4→8→16→32→64逐级增加，每档仅执行原版transformer_train的2个batch、1个限定轮次；另做1个真实混合长度batch检查mask/padding，每项共15个优化步骤，8项共120步。该入口期间仅在新临时目录写generator.pth并自动清理；没有1000轮任务、正式模型目录或后台队列。选模OT流程未在本次smoke中执行。
+- 每项另使用4条样本验证无前缀生成和带2包前缀续生成，检查输出shape、前缀保持及有效ID1..N。每个训练档检查参数和梯度有限值，全部日志Loss/NLL/KL有限。训练采样均为原实现，不调整模型维度、loss或精度。
+- 保护措施：启动前确认两卡无计算进程；每worker只暴露一张卡，PyTorch分配器限额为单卡50%；外部每约0.5秒只读采样整卡显存/温度，显存used>6144MiB、free<4096MiB、温度>=85℃或单worker超过180秒即停止本验证子进程；下一batch若上档reserved两倍超过4.5GiB则停止升级。分配器限额不是整卡硬限制，外部监控采样不是连续峰值保证。未触发任何阈值或OOM。
+
+| 数据集 | GPU0/32包 PyTorch峰值allocated/reserved（MiB） | GPU0整卡采样最大used（MiB） | GPU1/64包 PyTorch峰值allocated/reserved（MiB） | GPU1整卡采样最大used（MiB） |
+|---|---:|---:|---:|---:|
+| ISCX | 794.9 / 858 | 1221 | 1265.1 / 1476 | 1773 |
+| SSRC | 740.6 / 832 | 1195 | 1178.2 / 1386 | 1683 |
+| MIRAGE | 1072.7 / 1334 | 1699 | 1722.3 / 2050 | 2347 |
+| UTMN | 913.9 / 1054 | 1419 | 1448.9 / 1684 | 1981 |
+
+- 8项均到达batch64且passed。最重为MIRAGE64包：PyTorch峰值reserved2050MiB，整卡采样used2347MiB（约2.29GiB），采样最低free7529MiB；全程采样最高温56℃。结果说明该环境下原版32/64包、batch64的限定训练及少量采样具备可行性；不等于完整1000轮长期稳定性、全量CPU读取峰值、OT选模峰值或生成质量验证。
+- 所有worker正常退出，临时checkpoint目录全部清理。结束只读nvidia-smi确认无计算进程，GPU0恢复used83/free9786MiB，GPU1 used15/free9861MiB。没有遗留GPU任务或启动正式训练。
+- 汇总与逐项记录在log/length_gpu_smoke_20261120_v1/summary.json、gpu[0/1]_[数据集].json及同名.log；源代码/小样本/bins/脚本哈希和限额见manifest.json。验证脚本validation/smoke_length_gpu.py及其运行目录副本保留，重复运行需使用新目录，不能覆盖本轮。
+
+## 2026-11-20 16包混合表示有界GPU测试：整数时间＋IP等宽＋其余原值（5项通过）
+
+- 用户要求评估16包“无分箱（IP等宽）”小规模测试是否需减少bin，并明确时间按整数分箱。实际口径为混合表示：time在原范围0..10000上按1秒桶，按已有两位小数精度用[0,0.99]、[1,1.99]等不重叠闭区间实现，另含10000上限单点桶，共10001箱，超范围首末箱兜底；src_ip/dst_ip各100箱，区间与先前等宽实验逐项一致；pkt_len/flags/ttl/src_port/dst_port按前16包/flow的完整不同观测值建立单点区间与连续ID，不按配置范围裁剪包长或端口。其余属性保留当前JSON/编码使用的数值精度，不合并观测值。
+- 模型沿用刚才原版验证：独立noise_heads＋KL beta=0.01、FP32、Adam1e-4；源代码冻结在log/hybrid16_gpu_smoke_20261120_v1/source/，未修改主工作区无KL/no-noise实现或任何正式配置。
+- CPU扫描5个完整输入拟合完整词表，再每类取最多2条>=16包flow及1条短flow，最多16包，实际小样本ISCX30、SSRC20、MIRAGE60、UTMN51、CESNET3 63。CPU验证IP区间、整数时间边界、其他字段单点ID、padding/有效ID通过。每项训练使用完整词表和全部类别头，不以缩词表替代资源验证。
+- 只在GPU0依次测试5项，GPU1不运行测试。batch1→2→4→8→16→32→64各2个满16包真实样本训练batch（不足时重复选样），再1个混合长度batch；每项15步、总计75步。另各4条样本做无前缀及带2包前缀采样，检查shape、有效ID、前缀一致。未执行全量训练、1000轮实验或OT选模，临时generator.pth自动清理。
+- 保护措施与长度验证一致：启动前确认GPU0无计算进程；PyTorch分配器50%限额；整卡used>6144MiB、free<4096MiB、温度>=85℃、worker>180秒或batch升级预估超4.5GiB即停止；不触发OOM后继续扩大batch。整卡监控约0.5秒采样，不是连续硬限制。
+
+| 数据集 | 类别数合计 | 实际占用的1秒时间桶 | batch64训练峰值allocated/reserved（MiB） | 整卡采样最大used（MiB） |
+|---|---:|---:|---:|---:|
+| ISCX | 16789 | 322 | 825.3 / 1042 | 1407 |
+| SSRC | 19187 | 178 | 873.4 / 1128 | 1491 |
+| MIRAGE | 32974 | 405 | 1309.8 / 1820 | 2183 |
+| UTMN | 16252 | 58 | 894.6 / 1128 | 1493 |
+| CESNET3 | 13125 | 87 | 883.3 / 1174 | 1539 |
+
+- 5项均passed并到达batch64，参数/梯度和Loss/NLL/KL均有限，无OOM/断线/阈值停止。最大整卡used约2.13GiB（MIRAGE），采样最低free7686MiB；最高温55℃。
+- 资源判断：在本次16包、batch64、原版模型的限定条件下，没有因显存而减少bin数量的必要。IP200类仅占MIRAGE32974类的约0.61%；各100箱改各50箱仅节约100类，对FP32参数/梯度/Adam约0.441MiB、单份batch64/16包logits约0.391MiB，非总峰值节省，不值得优先牺牲IP分辨率。
+- 可选后续优化：时间10001桶中实际仅占58..405桶；可研究仅编码实际出现的1秒桶，以减少空类别且保留分辨率，但必须定义未见桶处理及保存映射。本次未作该优化，也没有比较生成质量；MIRAGE最大非IP词表为src_port17105类。不能从短测试推断完整训练长期稳定性或生成质量。
+- 原范围外时间观测ISCX11次、SSRC29次，其余0，维持同一范围兜底；UTMN包长保留原值，包括超出旧ChiMerge配置范围的值。本方案不是严格全字段无分箱。
+- 新词表、小样本、日志、逐项报告和summary.json/manifest.json全部位于log/hybrid16_gpu_smoke_20261120_v1/。验证脚本validation/smoke_hybrid_16_gpu.py及运行目录副本已保留；既有实验日志/模型/结果未覆盖。
+- 测试进程正常结束、临时权重目录全部清理。结束nvidia-smi无计算进程，GPU0恢复used83/free9786MiB，GPU1 used15/free9861MiB。未启动正式实验或遗留后台任务。
+
+## 2026-11-20 GPU0完整数据正式混合表示：时间>=5000合并尾桶（已后台启动）
+
+- 用户授权GPU0正式运行ISCX、SSRC、MIRAGE、UTMN、CESNET3完整数据，时间5000以上合并一桶，其余保持刚验证的混合表示，不覆盖已有产物。新运行名hybrid16_time5000_formal_20261120_v1。
+- 边界按“5000以上”含5000处理：现有两位小数精度下，时间桶为[0,0.99]...[4999,4999.99]共5000个1秒桶，加[5000,10000]尾桶，总5001箱。原时间范围0..10000不变，>10000继续归尾桶，负值仍按首箱兜底。实际CustomDataset编码验证4999.99→ID5000、5000/5000.01/10000/10000.01/20000→ID5001。
+- 其余字段完整区间列表与hybrid16_gpu_smoke_20261120_v1逐项一致：源/目的IP原全范围等宽各100箱，pkt_len/flags/ttl/src_port/dst_port按不同观测值一一编码，不合并数值、不按旧ChiMerge范围裁剪包长。时间、IP仍按原后处理箱内取值方式反分箱，非时间/IP单点箱还原原值。本轮不是ChiMerge或严格全字段无分箱实验。
+- 参数：max_seq_len16、batch_size64、epoch1000、checkpoint100、expand_times0（逐类生成原输入1倍flow）、preencode=true、seed20261120。模型为已验证原版独立noise_heads＋KL beta0.01、FP32、Adam1e-4；不使用当前主工作区无KL/no-noise消融代码，不加载旧权重。冻结源码在本运行source/，模型相关文件与小规模验证快照哈希一致；driver单独冻结当前版本，仅用其类别映射/模块入口。
+- 顺序固定`iscx → ssrc → mirage → utmn → cesnet3`，同一GPU一次一个worker。每项训练→10个checkpoint选模→生成→逐类数量/截断长度/有限值/完整epoch日志与checkpoint校验，全部成功才进入下一项，失败停止队列。输入data-json原完整数据，不用small/train/test或smoke子集替代。输入/分箱/配置/源码哈希、逐类计数、截断长度保存在manifest.json；启动每项前重新核对。
+- 新词表总数：ISCX11789、SSRC14187、MIRAGE27974、UTMN11252、CESNET3 8125（均比此前通过GPU验证的对应词表减少5000类）。输入flow依次6781、7426、33975、5057、209999，合计263238。5项配置为log/hybrid16_time5000_formal_20261120_v1/[数据集].config.json。
+- 新输出路径：bins/hybrid16_time5000_formal_20261120_v1/bins_[数据集].json；model/hybrid16_time5000_formal_20261120_v1/[数据集]/；result/hybrid16_time5000_formal_20261120_v1/[数据集]/。模型/结果目录存在即失败，日志exclusive创建，原始数据及任何旧实验输出均未修改。
+- 新任务stdout/stderr写入log/hybrid16_time5000_formal_20261120_v1/[数据集].log，状态[数据集].status.json记录阶段/耗时/最佳epoch/生成计数；队列日志gpu0.queue.log，队列状态gpu0.status.json。全部使用新文件，不覆盖既有日志。原有generator.pth的每轮更新仅发生在本轮新建模型目录内部。
+- GPU安全：仅暴露物理GPU0，PyTorch分配器限50%；lane约每5秒读nvidia-smi，整卡used>6144MiB、free<4096MiB、温度>=85℃、监控不可用或日志出现非有限Loss/NLL/KL时停止当前worker并终止后续项，不自动减batch或缩短epoch。该限额不是整卡硬限制，采样也不能保证捕获瞬时峰值。GPU1未启动任务。
+- 启动前GPU0/1均无计算进程，GPU0 used83/free9786MiB，磁盘约86GiB可用。预检查通过：原模型beta/noise、所有源代码/配置/输入/bin哈希、5项非时间字段不变、实际编码时间边界和全新模型/结果/日志路径；未修改全局config或主模型代码。
+- 后台启动时间北京时间2026-11-20 15:07:44，lane PID/PGID/SID331800、PPID1，worker331806，同PGID。核实worker位于GPU0（UUID GPU-1f72e708-dcfc-5400-3a85-e61d6272edc1）、显存约1188MiB。ISCX从epoch0开始、完整6781样本preencode=true，初始已超过22/1000，loss/NLL/KL有限，每轮约2.56秒。这是启动证据，不代表正式实验已完成。
+
+监控（在/home/xiaozj/cgan下执行）：
+
+```bash
+/data/xiaozj/anaconda3/envs/exp/bin/python log/hybrid16_time5000_formal_20261120_v1/run.py status
+cat log/hybrid16_time5000_formal_20261120_v1/gpu0.status.json
+tail -f log/hybrid16_time5000_formal_20261120_v1/gpu0.queue.log
+# 当前ISCX；后续按status中的active替换文件名
+tail -f log/hybrid16_time5000_formal_20261120_v1/iscx.log
+nvidia-smi
+```
+
+停止本新队列（验证PID启动标识、脚本路径、lane参数和PGID，仅停止本lane及其worker，保留已写产物）：
+
+```bash
+/data/xiaozj/anaconda3/envs/exp/bin/python log/hybrid16_time5000_formal_20261120_v1/run.py stop 0
+```
+
+停止不额外保存半轮进度，现有checkpoint仅含模型权重。队列completed且completed列表有5项、5份case状态均completed才视为整轮完成；不要重复launch同一目录。
+
+## 2026-11-20 新增扁平属性Transformer基线（代码接入＋GPU1有界验证，未正式运行）
+
+- 用户同意扁平Transformer方案，要求保留原代码，以新增文件接入，可做简单耗时/显存测试，GPU只用物理GPU1。本轮新增stateFormer/flat_transformer.py、stateFormer/flat_train.py、post_process/flat_pipeline.py、flat_driver.py及validation测试脚本，没有修改原transformer.py/model_train.py/dataset.py、原后处理、ChiMerge或driver.py，也未覆盖全局config.json；既有未提交修改保留。
+- FlatTransGenerator按包优先展开八字段为属性序列。16包对应128token；输入为BOS、y0、y1...，目标为y0、y1、y2...。输入值embedding使用前一token所属字段，目标字段embedding使用当前待预测字段；另加入packet位置、类别、长度条件和逐位置32维独立高斯噪声投影。512维、4层8头因果Transformer直接经字段专属输出头得到N_f+1分类logits，0号输出屏蔽。
+- 不使用packet-state瓶颈、mu/logvar、state重参数化、condition_fix或输出端独立noise_heads。长度/类别仍为外部条件。训练仅按原mask、类别权重和字段平均方式求NLL，无KL/beta。各字段只计算自己的目标位置，避免分配[batch,全部属性token,全部字段词表之和]大张量。
+- sample固定整条流的位置噪声bank，在逐属性重算前缀时重复使用同一噪声前缀；每8个token还原为一个packet，返回[batch,max_packets,8]。流级meta仍按原设计每包重复，反分箱/JSON保存保留首包meta处理。第一版无KV-cache，生成会反复计算变长历史。
+- 独立flat_driver.py显式要求model_type=flat_transformer_v1且仅允许完整ChiMerge。复用现有CustomDataset编码；在新训练入口属性级右移。选模复用原OT/HM计算与最小OT选择规则；反分箱复用现有函数。没有全局猴子补丁或替换原模型导入。
+- 新checkpoint包含model_type、构造参数、字段顺序/类别映射/bins和输入SHA-256/seed元数据及权重。加载时校验类型和元数据，拒绝其他架构及不匹配数据。仅保存权重与配置，不保存Adam/RNG，不提供自动续训；新入口拒绝既有bins文件、模型和结果目录。
+- 5份独立配置仅准备于configs/flat_transformer_20261120_v1/{iscx,ssrc,mirage,utmn,cesnet3}.json：完整ChiMerge、16包、batch64（有界验证已通过）、1000epoch、checkpoint100、expand_times0、seed20261120。目标bins/model/result均为各自flat_transformer_20261120_v1命名空间；目前没有创建这些正式输出目录或启动正式任务。原始模型作为对照应使用原版noise＋KL(beta0.01)冻结快照，而非当前主文件无KL/no-noise消融版。
+- CPU正确性检查validation/test_flat_transformer.py共7项通过（约0.94秒）：属性移位及前字段embedding、未来目标/未来噪声无泄漏、固定噪声下teacher forcing与逐前缀预测一致、带权mask NLL与手算一致/忽略padding/噪声梯度存在、固定噪声bank采样/合法ID/前缀保持、checkpoint精确往返及身份拒绝、极小真实数据完整ChiMerge→1轮训练→checkpoint选模→JSON生成及重复输出拒绝。CPU集成模型仅32维1层、2类各2条，临时目录已清理，未初始化CUDA。
+- GPU验证validation/benchmark_flat_gpu.py仅GPU1，使用5个数据集16包完整原版ChiMerge词表与已有真实小样本（不是混合分箱），模型真实512维4层。batch1→2→4→8→16→32→64，每档1步预热＋3步计时；全部用满16包真实样本，必要时重复采样。每项另采样单流3次计时。5项均到达batch64且passed，loss/参数/梯度有限，输出shape与ID范围正确。另对MIRAGE原版packet模型测batch8/64作为参考，来源明确为noise＋KL beta0.01冻结实现。
+- 保护：GPU1启动前无计算进程；PyTorch分配器50%限额，整卡used>6144MiB、free<4096MiB、温度>=85℃、单worker>240秒或batch升级预算超过4.5GiB则停止本测试。只监控/停止本GPU1验证子进程，不发信号给GPU0。相邻GPU0若达到85℃也会停止新增GPU1验证以避免继续增加热负荷。本次无任何阈值停止、OOM或非有限值。
+
+| 扁平模型数据集 | batch64训练步中位耗时 | PyTorch峰值allocated/reserved（MiB） | GPU1整卡采样最大used（MiB） | 单流16包生成中位耗时 |
+|---|---:|---:|---:|---:|
+| ISCX | 60.40毫秒 | 1629.4 / 1838 | 2135 | 0.142秒 |
+| SSRC | 60.16毫秒 | 1618.2 / 1824 | 2121 | 0.142秒 |
+| MIRAGE | 61.84毫秒 | 1660.9 / 1856 | 2153 | 0.143秒 |
+| UTMN | 60.77毫秒 | 1629.9 / 1838 | 2135 | 0.142秒 |
+| CESNET3 | 61.14毫秒 | 1645.4 / 1858 | 2155 | 0.143秒 |
+
+- 时间口径：GPU驻留minibatch的forward＋loss＋backward＋Adam，CUDA synchronize计时，取3步中位；不含全量数据加载、预编码、checkpoint写盘和OT选模。生成是单流bins ID自回归，不含JSON反分箱保存。整卡最大值来自约0.5秒采样，不等于连续瞬时峰值。
+- MIRAGE参考原packet模型同batch64：25.67毫秒/训练步、峰值allocated667.8/reserved758MiB、整卡采样1053MiB、单流生成0.035秒。新扁平模型对应训练约2.41倍耗时、生成约4.1倍；原packet参数约25.52M，新flat约15.83M，非等参数架构比较，不把该比值视为纯序列展平的独立因果效应。
+- 汇总log/flat_transformer_smoke_20261120_v1/summary.json为passed，6项（5 flat＋1原版参考）全部通过；逐项.json/.log、源代码快照/哈希、bins/小样本哈希、CPU测试摘要在同目录。GPU测试不保存模型权重或正式生成数据。
+- 结束核实GPU1无计算进程、恢复used15/free9861MiB。GPU0仍为原hybrid16_time5000_formal_20261120_v1的worker331806，占用约1190MiB；未停止、重启、修改其快照或输出。全部旧文件保持，未启动flat正式实验。
+
+仅验证的复现入口（本次已执行）：
+
+```bash
+CUDA_VISIBLE_DEVICES=-1 OMP_NUM_THREADS=1 /data/xiaozj/anaconda3/envs/exp/bin/python validation/test_flat_transformer.py
+```
+
+后续正式flat入口（本次没有执行；需另行安排GPU、输出目录与日志）：
+
+```bash
+CUDA_VISIBLE_DEVICES=1 /data/xiaozj/anaconda3/envs/exp/bin/python -u flat_driver.py --config configs/flat_transformer_20261120_v1/iscx.json
+```
+
+GPU性能脚本使用exclusive运行目录，不能覆盖同名结果重复执行；如需复测需使用新运行目录。
+
+## 2026-11-20 GPU1完整数据扁平Transformer正式队列（已后台启动）
+
+- 用户授权在GPU1对ISCX、SSRC、MIRAGE、UTMN、CESNET3完整数据执行扁平模型训练、选模、生成，并估算单项与总耗时。新运行名flat_formal_20261120_v1，顺序`iscx → ssrc → mirage → utmn → cesnet3`，一项全部成功后再进入下一项。
+- 参数沿用已验证配置：完整原版ChiMerge（含threshold_merge）、八字段、最大16包/128属性token、batch_size64、1000epoch、checkpoint100、expand_times0（逐类生成输入1倍flow）、seed20261120；512维4层8头、128维字段值embedding、逐位置32维噪声投影，NLL-only，无packet-state/KL。不是混合整数时间/IP分箱实验，不加载原packet模型权重。
+- 完整输入data-json/{iscx,ssrc,mirage,utmn,cesnet3}，不是smoke/train/test子集。输入flow数6781、7426、33975、5057、209999，类别数10、9、20、17、21，总计263238 flow。逐文件JSON、非空series、字段有限值/哈希均已核验，逐类计数和前16包长度保存于manifest.json；每worker开始前重新核对文件集合和哈希。
+- 当前扁平模型/训练/后处理/入口源码与已通过GPU1测试的源文件哈希一致；完整相关代码冻结到log/flat_formal_20261120_v1/source/，5份独立配置[数据集].config.json、哈希和队列保护阈值存manifest.json。快照flat_driver的工作区根路径仅在worker内部显式指回/home/xiaozj/cgan，防止将source快照目录当成data-json根；不改动工作区代码或旧实验快照。
+- 新分箱：bins/flat_formal_20261120_v1/bins_[数据集].json；模型：model/flat_formal_20261120_v1/[数据集]/；结果：result/flat_formal_20261120_v1/[数据集]/。包含模型类型/参数和字段/类别/bins/input身份的checkpoint与model metadata一起保存。新路径存在即报错，不自动续训或覆盖旧模型/结果。
+- 新日志：log/flat_formal_20261120_v1/[数据集].log（exclusive创建、无缓冲stdout/stderr），阶段/耗时/最佳epoch/选模指标/生成校验写入[数据集].status.json；队列gpu1.queue.log/gpu1.status.json。1000轮有限NLL日志、100..1000共10个checkpoint、10组有限OT/HM、每类JSON数量和长度/字段有限值均通过才标记completed。单项失败停止后续项。
+- GPU1独占可见设备，分配器上限50%，约每5秒监控整卡used>6144MiB、free<4096MiB、温度>=85℃及非有限loss，异常即终止本worker、停止本队列。不自动减少batch或epoch。不操作GPU0进程。分配器不是整卡硬上限，外部采样不是连续峰值保证。
+- 启动前GPU1无计算进程，used15/free9861MiB；磁盘约85GiB可用、主机可用RAM约55GiB。正式启动北京时间2026-11-20 15:41:35，lane PID/PGID/SID336187、PPID1，初始worker336192。nvidia-smi核实worker在物理GPU1（UUID GPU-dd306551-104a-e6e1-34ec-1c79160bbe17），初始显存约2012MiB。ISCX完整ChiMerge箱数245/554/13/66/235/77/29/408，16包128token，已进入训练，初始每轮约6.3–6.5秒、NLL有限。本节是启动证据，非完成结果。
+
+### 单项及全队列耗时预估
+
+- 训练依据：此前同模型/完整词表GPU1 batch64三步中位数，ISCX60.40、SSRC60.16、MIRAGE61.84、UTMN60.77、CESNET3 61.14毫秒/步；按ceil(flow/64)×1000计算，不减少epoch。初始完整ISCX实测与此接近。
+- 为避免将batch1生成时间错误外推到batch64，本轮另外做了有界GPU1采样校准：每数据集1次预热+3次batch64、16包/128token采样，无训练或JSON生成。中位数依次1.2467、1.2506、1.2465、1.2452、1.2484秒/批。明细[数据集].generation_calibration.json/.log，脚本calibrate_generation.py；均有50%分配器及显存/温度/120秒超时保护。
+- 选模对100..1000共10个checkpoint分别按完整输入逐类生成再算OT/HM，最终最佳checkpoint再生成1次。因此按逐类ceil(n_class/64)计算11遍采样开销，并额外考虑精确OT求解、CPU编码/反分箱、数据传输及checkpoint写盘。单流0.143秒的小测试耗时未直接按总flow数相乘。
+
+| 数据集 | 纯训练外推 | 10次选模采样＋最终生成外推 | 单项总耗时预计（含其他开销/波动） |
+|---|---:|---:|---:|
+| ISCX | 1.78小时 | 0.42小时 | 2.2–2.8小时 |
+| SSRC | 1.96小时 | 0.45小时 | 2.3–3.0小时 |
+| MIRAGE | 9.12小时 | 2.07小时 | 11–14小时 |
+| UTMN | 1.35小时 | 0.33小时 | 1.6–2.2小时 |
+| CESNET3 | 55.74小时 | 12.58小时 | 68–82小时 |
+
+- 全部5项GPU1串行合计约85.1–104小时（约3.5–4.3天）。按启动时间预计北京时间2026-11-24 04:48至23:42全部完成。单项不含等待前序项；总计已包含全部顺序等待。范围考虑持续负载/温度导致的时钟变化、CPU数据/反分箱、保存和精确OT求解波动，非保证。原始计算的batch数、实测秒数及区间见initial_eta.json；后续应按实际完整epoch/选模阶段更新。
+
+### 监控和停止
+
+在/home/xiaozj/cgan下执行：
+
+```bash
+/data/xiaozj/anaconda3/envs/exp/bin/python log/flat_formal_20261120_v1/run.py status
+cat log/flat_formal_20261120_v1/gpu1.status.json
+tail -f log/flat_formal_20261120_v1/gpu1.queue.log
+# 当前ISCX，后续按active字段替换日志名
+tail -f log/flat_formal_20261120_v1/iscx.log
+nvidia-smi
+```
+
+只停止本扁平模型GPU1队列（核实脚本/PID启动标识/PGID后终止本lane和其worker，保留已写文件）：
+
+```bash
+/data/xiaozj/anaconda3/envs/exp/bin/python log/flat_formal_20261120_v1/run.py stop 1
+```
+
+checkpoint保存权重和模型/数据元信息，不含Adam/RNG；停止不保存半轮。不要重复launch同一目录，也不要用泛化pkill。
+
+### 同时发现的GPU0旧队列状态
+
+- 只读核实发现hybrid16_time5000_formal_20261120_v1于2026-11-20 15:41:09因既有监控读到85℃自动停止：gpu0.status.json=failed，error为GPU safety stop，exit143；ISCX最后日志epoch726/1000。此发生于GPU1新正式队列15:41:35启动前。可确认温度保护触发，不能仅凭该记录判定散热耦合的因果。
+- 本次未向该GPU0进程发送信号、修改其温度阈值或自动重启；旧日志/权重保留，恢复前需要另行核验checkpoint完整性和温度条件。本GPU1队列独立运行。
+
+## 2026-11-20 GPU1调整CESNET3重跑、GPU0恢复，温度停止阈值改90℃（两条已启动）
+
+- 用户先要求停止GPU1当前实验，仅将CESNET3改为500轮/每50轮检查点，其余数据集保持，并重启GPU0；随后明确温度停止阈值90℃而非85℃。本次继续完成两项重启，所有新队列运行时判断均为temp>=90；显存限制不变（分配器50%、used>6144MiB或free<4096MiB停止），约5秒监控。旧v1记录保留原85℃历史，不重写旧日志或模型。
+
+### GPU1：扁平模型从头重跑v2
+
+- 已使用身份核验停止入口终止flat_formal_20261120_v1的lane336187/worker336192，状态stopped，旧ISCX日志最后到67/1000。旧源码、checkpoint、日志和结果目录全部保留，不复用其权重。
+- 新运行flat_formal_20261120_v2：顺序iscx→ssrc→mirage→utmn→cesnet3，5项均从epoch0开始，完整ChiMerge、16包/128属性token、batch64、expand_times0及已验证扁平模型/数据/seed均保持。ISCX/SSRC/MIRAGE/UTMN为epoch1000/checkpoint100；仅CESNET3为epoch500/checkpoint50，仍有50..500共10个编号checkpoint和10次选模。
+- v2源码从v1冻结副本逐文件校验复制；输入SHA-256、配置及新目标路径核对通过。worker完整性验证改为按各自epoch/checkpoint计算，正确接受500轮/50保存和原1000轮/100保存，且校验每一轮日志序号完整，不只计数。
+- 新bins/model/result均使用各自flat_formal_20261120_v2命名空间；日志log/flat_formal_20261120_v2/[数据集].log，队列gpu1.queue.log，状态gpu1.status.json/各数据集.status.json，清单manifest.json。全部新文件/目录，未覆盖v1。
+- 根据原GPU1训练及batch64采样计时更新：CESNET3纯训练外推约27.87小时，10次选模采样＋最终生成仍约12.58小时，因此单项预计40–50小时；其余4项估计不变，全部约57.1–72小时。initial_eta.json已更新，不能把整轮时间简单减半。
+
+### GPU0：混合表示实验从700轮恢复v2
+
+- 原hybrid16_time5000_formal_20261120_v1在85℃停止后，latest generator.pth仅24836103字节，CPU torch.load报PytorchStreamReader缺data/40，确认不完整；未删除或覆盖。generator_700.pth为87772027字节，CPU加载、全部参数有限和原版模型strict load均通过，SHA-256=b31ef06f87f09c3ce6296c531853065aeeeccde6a53718fa43a4e51c06c542c4。
+- 新运行hybrid16_time5000_resume_20261120_v2。5份原bins精确复制且哈希匹配，模型为原noise＋KL beta0.01，混合表示仍为time>=5000尾桶/IP各100箱/其余原值编码，16包、batch64、1000轮、checkpoint100、expand_times0。
+- ISCX新模型目录复制原100..700编号checkpoint并核对哈希，native find_latest_checkpoint确认从700恢复，实际继续701..1000；旧日志701..726因无完整最新检查点需重算。其余SSRC/MIRAGE/UTMN/CESNET3从epoch0开始。原checkpoint不含Adam/RNG，恢复初始化新Adam和随机状态，不与不间断训练逐步等价，此限制已向用户说明。
+- 模型、bins、结果均写入各自hybrid16_time5000_resume_20261120_v2命名空间；新日志log/hybrid16_time5000_resume_20261120_v2/[数据集].log，与旧日志完全分开。旧权重、旧坏latest及旧日志保留。新结果从未存在，不覆盖旧结果。
+- 仅在新worker中包装torch.save为临时文件写完再rename，训练和loss数学未变；完整latest保存后写model/.../[数据集]/latest_complete_epoch.json。若温度停止发生在写盘过程中，上一个完整latest仍保留，避免再次破坏已完成权重。恢复日志仅要求701..1000齐全，但选模仍用复制的100..700和新800..1000共10个checkpoint。
+
+### 启动核实及监控
+
+- 两条新队列北京时间2026-11-20 15:55:22启动：GPU0 lane PID/PGID/SID337663、worker337674；GPU1 lane337666、worker337677，独立会话，父进程脱离终端。
+- 核实GPU0明确记录从epoch700恢复，已到704/1000，NLL/KL有限；latest_complete_epoch.json=704，运行温度约63℃。GPU1从1/1000重新开始，第一轮NLL与v1相同，约6.52秒，温度约58℃。这是重新启动证据，尚未完成。两脚本源码和manifest阈值均90℃，未升高显存限额。
+
+```bash
+# GPU1新扁平队列：监控 / 停止
+/data/xiaozj/anaconda3/envs/exp/bin/python log/flat_formal_20261120_v2/run.py status
+tail -f log/flat_formal_20261120_v2/gpu1.queue.log log/flat_formal_20261120_v2/iscx.log
+/data/xiaozj/anaconda3/envs/exp/bin/python log/flat_formal_20261120_v2/run.py stop 1
+
+# GPU0恢复队列：监控 / 停止
+/data/xiaozj/anaconda3/envs/exp/bin/python log/hybrid16_time5000_resume_20261120_v2/run.py status
+tail -f log/hybrid16_time5000_resume_20261120_v2/gpu0.queue.log log/hybrid16_time5000_resume_20261120_v2/iscx.log
+/data/xiaozj/anaconda3/envs/exp/bin/python log/hybrid16_time5000_resume_20261120_v2/run.py stop 0
+```
+
+停止命令仍核验各自脚本、lane参数、PID启动标识及PGID，只影响本队列；不要重复launch同一运行目录。
+
+## 2026-11-20 GPU0改为时间3000尾桶＋端口等宽250箱，从头训练
+
+- 用户要求先停止过热的GPU0任务，再将时间3000以上并为一箱、端口使用等宽分箱并重新训练。调用旧队列stop 0时，hybrid16_time5000_resume_20261120_v2已经于15:59:54因监控读到90℃自动失败退出（exit143），并非本次停止命令再次发信号。随后nvidia-smi和进程身份核实GPU0无计算进程，旧lane337663/worker337674均已退出；GPU1的flat_formal_20261120_v2 lane337666/worker337677持续运行，没有修改或停止。
+- 新实验命名空间：hybrid16_time3000_ports250_20261120_v1。顺序ISCX→SSRC→MIRAGE→UTMN→CESNET3，全部完整数据、每流最多16包、batch64、1000轮、每100轮checkpoint、expand_times=0、seed20261120；原版packet-state模型、独立noise、KL beta=0.01。分箱维度已变，五项均从epoch0初始化，不能加载旧权重继续；本次不改变主工作区模型源码，使用旧GPU0经过验证的冻结原版source副本并逐文件校验SHA-256。
+- 时间[0,3000)保持1秒整数分箱，即[k,k+0.99]，k=0..2999；尾箱为[3000,10000]，共3001箱。含3000边界；>10000仍按原编码器映射到最后一箱，反分箱保持原最大值10000。src_port/dst_port均使用pre_process.baseline.cal_bins_equal_width：范围0..65535，各250箱，整数边界与原equal_width基线一致，共享边界保持原编码器first-match。IP各100箱不变；pkt_len/flags/ttl原始单值箱不变。
+
+| 数据集 | 原5000尾桶且端口原值的总箱数 | 新3000尾桶且端口250箱的总箱数 |
+|---|---:|---:|
+| ISCX | 11789 | 4785 |
+| SSRC | 14187 | 3913 |
+| MIRAGE | 27974 | 6488 |
+| UTMN | 11252 | 5311 |
+| CESNET3 | 8125 | 6623 |
+
+- 输出独立：bins/hybrid16_time3000_ports250_20261120_v1/bins_[数据集].json；model/hybrid16_time3000_ports250_20261120_v1/[数据集]/；result/hybrid16_time3000_ports250_20261120_v1/[数据集]/；log/hybrid16_time3000_ports250_20261120_v1/[数据集].log。配置、清单、输入/源码/分箱哈希、cpu_preflight.py/json/log及队列状态也位于新log目录。旧日志、权重和结果不覆盖。
+- CPU-only小规模预检5/5通过：使用已有小规模真实样本，编码样本30/20/60/51/63；检查时间2999.99/3000/10000/10001和端口0/65535边界、全部ID范围，每项仅一个batch2训练更新、有限参数及梯度、临时权重保存/严格加载、两条生成序列。临时模型自动清理，无GPU测试负载；正式运行前另核对完整输入、冻结源码和配置哈希。语法检查通过。
+- GPU0启动前增加空闲且温度≤75℃的冷却等待，温度未达标只等待，不占用GPU计算。运行中仍约5秒检查，temp>=90℃、used>6144MiB、free<4096MiB、非有限loss或监控失败时停止本队列；分配器50%上限不变。保留原子checkpoint保存及latest_complete_epoch.json。减少箱数不保证持续温度降低；没有改变GPU功耗、风扇或GPU1配置。
+- 已于北京时间16:01:54后台启动，独立lane PID/PGID/SID339561，worker339568。ISCX明确从0开始、完整6781样本预编码成功并完成第1/1000轮，NLL/KL有限，第1轮约2.27秒；16:02附近外部快照GPU0约1053MiB/79℃，GPU1约2035MiB/79℃，两卡各自对应worker。此为启动验证，尚未完成正式实验，短时温度不能代表长期温度。
+
+在/home/xiaozj/cgan中监控或停止本次GPU0队列：
+
+```bash
+/data/xiaozj/anaconda3/envs/exp/bin/python log/hybrid16_time3000_ports250_20261120_v1/run.py status
+cat log/hybrid16_time3000_ports250_20261120_v1/gpu0.status.json
+tail -f log/hybrid16_time3000_ports250_20261120_v1/gpu0.queue.log log/hybrid16_time3000_ports250_20261120_v1/iscx.log
+# 后续数据集按status的active字段更换日志名
+nvidia-smi
+# 核验脚本/PID启动标识/PGID后，仅终止本队列及其worker
+/data/xiaozj/anaconda3/envs/exp/bin/python log/hybrid16_time3000_ports250_20261120_v1/run.py stop 0
+```
+
+不要重复launch相同目录；停止不保存半轮，权重仍不含Adam/RNG。GPU1继续使用原v2队列的监控/停止入口。
+
+## 2026-11-20 GPU0恢复完整ChiMerge＋原版模型，并记录过热诊断
+
+- 用户要求GPU0过热终止后恢复ChiMerge＋原有模型进行训练生成，并判断实验设置与散热原因。已确认hybrid16_time3000_ports250_20261120_v1于16:03:30达到90℃后自动停止（exit143）；lane339561/worker339568均已退出，无残留GPU0计算进程。GPU1 flat_formal_20261120_v2的lane337666/worker337677持续运行，未停止、未改配置。
+- 新运行名chimerge_original_thermal_20261120_v1，已于北京时间16:08:47后台启动。GPU0 lane PID/PGID/SID343227、worker343234。五个完整数据集按ISCX→SSRC→MIRAGE→UTMN→CESNET3串行，全部从epoch0训练：max_seq_len16、batch64、epoch1000、checkpoint100、expand_times0、seed20261120、preencode=True；随后原选模与生成流程。旧文件均保留。
+- 恢复的是完整八字段ChiMerge（包含threshold_merge和chi_merge），不是混合编码。复用bins/chimerge_threshold_ablation_20261118_v1/original已完成的原方法分箱，五项均与已完成chimerge_no_kl_no_noise实验中的分箱逐字段相同，并核对original分支的统计、完整输入SHA-256及流数；新bins是原文件逐字节复制。此次只复用分箱，不复用无KL实验的模型源码或权重。
+- 原版模型来自旧GPU0冻结source并逐文件核对哈希：stateFormer/transformer.py含独立noise_heads，model_train.py含beta=0.01和实际KL贡献；保持原packet-state/属性自回归与原生成方式。冻结ChiMerge.py与当前恢复后的主工作区ChiMerge.py逐字节相同。未修改主工作区的模型消融代码或GPU1代码。
+
+| 数据集 | 完整ChiMerge总分箱数 | 训练流数 |
+|---|---:|---:|
+| ISCX | 1627 | 6781 |
+| SSRC | 687 | 7426 |
+| MIRAGE | 4801 | 33975 |
+| UTMN | 1792 | 5057 |
+| CESNET3 | 3344 | 209999 |
+
+- 新输出均使用chimerge_original_thermal_20261120_v1命名空间：bins/[运行名]/bins_[数据集].json、model/[运行名]/[数据集]/、result/[运行名]/[数据集]/；日志log/[运行名]/[数据集].log，配置/清单/状态也在新log目录。CPU预检5/5通过：真实小样本编码及ID范围、每项一个batch2训练更新、有限参数和梯度、临时权重严格加载、两条生成序列；无额外GPU压力测试。语法和冻结文件哈希检查通过。
+- 继续执行启动前GPU0空闲且温度≤75℃、运行时temp>=90℃停止、分配器50%、used>6144MiB/free<4096MiB停止、非有限loss/监控失败停止。原子权重保存及latest_complete_epoch.json保留。没有改变硬件功率上限、风扇控制、GPU时钟或GPU1训练设置。
+
+### 当前诊断证据与边界
+
+- 旧GPU0 ISCX的5000尾桶/端口原值共11789箱：v1用时2005秒到85℃停，重启v2用时272秒到90℃停；3000尾桶/端口250等宽共4785箱，用时96秒到90℃停，当时仅1053MiB显存。这些起始热状态、运行阶段和GPU1状态不同，不能用停止用时直接量化分箱对温度的因果效应；明确不是OOM或显存限制触发。
+- 本次恢复完整ChiMerge的ISCX仅1627箱，启动GPU0约59℃/31W/空闲；约31秒已到80℃，约101秒到89℃。16:11:14（约147秒）仍在训练第67轮附近，GPU0约88℃、风扇100%、显存955MiB、瞬时功耗250W；同刻GPU1约78℃、风扇91%、显存2035MiB、功耗344W。20秒后的已采样GPU0功耗大致264–314W，运行期间GPU利用率通常较高；瞬时点不能代替热稳态平均。
+- gpu_before.txt与gpu_after_observation.txt记录驱动详细温度/功耗/时钟/降频原因。本次GPU0从SW Thermal Slowdown Not Active变为Active，累计计数从833577485974us增加到833676240831us（约98.75秒）；GPU1该项在这两个快照中均Not Active，计数132819439252us不变。此处使用同次运行前后差值，不把跨历史启动的累计计数当作本次证据。
+- 初步判断：过热并非混合分箱或大词表独有；在完整ChiMerge＋原版模型、显存不到1GiB的情况下，GPU0仍快速升至88–89℃并发生驱动温度降频，风扇读数已100%。现有证据更支持GPU0在当前持续负载/双卡环境中的散热余量不足，训练负载是触发因素；不支持仅靠减少bins就能解决。功耗低于GPU1仍更热是辅助线索，非严格同负载对照。
+- 尚不能仅凭软件传感器区分显卡散热接触/积灰/风扇实际转速问题、机箱风道/卡间距、进风温度或GPU1热耦合；风扇百分比不证明所有物理风扇运转正常。也不能将不同工作负载、不同卡位置的比较当作硬件故障定论。需要后续有条件进行相同负载/相同冷却起点的单卡对照及现场散热检查；本次不为诊断停止GPU1，不擅自调整硬件参数。
+- 当前只是启动及短期温度观察，不代表热稳态或五项实验完成；若再次90℃停止，队列会保留权重/日志并退出，不自动反复重启。正式训练及生成是否完成必须看每项status=completed和生成数量验证。
+
+### 监控和停止
+
+约5秒一条thermal_telemetry.jsonl，包含两张卡的时间、UUID、显存、温度、风扇、利用率、功耗/上限、SM/显存时钟、P-state。仅只读查询GPU1，不向GPU1发送信号。thermal_report.py只读这些日志汇总，无CUDA调用。
+
+```bash
+/data/xiaozj/anaconda3/envs/exp/bin/python log/chimerge_original_thermal_20261120_v1/run.py status
+cat log/chimerge_original_thermal_20261120_v1/gpu0.status.json
+tail -f log/chimerge_original_thermal_20261120_v1/iscx.log
+tail -f log/chimerge_original_thermal_20261120_v1/thermal_telemetry.jsonl
+# 更新汇总；后续按active更换数据集日志名
+/data/xiaozj/anaconda3/envs/exp/bin/python log/chimerge_original_thermal_20261120_v1/thermal_report.py
+# 身份核验后只停止此GPU0队列，保留所有文件
+/data/xiaozj/anaconda3/envs/exp/bin/python log/chimerge_original_thermal_20261120_v1/run.py stop 0
+```
+
+### 本次原版对照最终观察：再次触发90℃保护，已停止
+
+- 上述启动观察之后，GPU0在16:11:19达到90℃自动终止：距16:08:47启动152秒；gpu0.status.json=failed，exit143，error=GPU safety stop: used=955 free=8914 temperature=90。ISCX最后完成69/1000轮，后续4个数据集未启动，选模及生成均未进行。因此本次五数据集训练生成尚未完成，不能把“已恢复并启动”理解为“已生成”。没有自动再次重启。
+- 最后现场核实lane343227/worker343234均退出，GPU0计算进程为空、显存83MiB、利用率0%、温度回落到66℃；GPU1仍是原lane337666/worker337677，利用率99%、约78℃、2035MiB，未受停止影响。
+- model/chimerge_original_thermal_20261120_v1/iscx/generator.pth及latest_complete_epoch.json保存第69轮完整权重。CPU torch.load成功，134个参数张量均有限，76024075字节，SHA-256=8a0b58ed1cb1aa16ef81653b878df27c203ef281cfc8d6bcbaec65afe84d4d05；详情stopped_checkpoint_check.json。未到第100轮，尚无编号checkpoint；权重没有Adam/RNG，现有原生恢复入口只找编号权重，后续若决定从69恢复需显式处理，不能直接重新launch旧目录或声称自动无缝续训。
+- 最终判断更明确：完整ChiMerge＋原版模型也从59℃在152秒内到90℃，并有SW Thermal Slowdown Active、风扇100%的记录，排除了“只有新混合分箱才会过热”的解释。显存955MiB远低于保护限制。更倾向GPU0当前散热能力/进风环境在持续负载下不足，双卡热耦合仍是可能因素；不能只据软件读数断言显卡某个硬件部件损坏。实验负载会产热，不代表分箱或模型逻辑错误。
+- 在散热问题处理前不建议反复满负载重启。可先现场检查进风、两卡间距、积灰、物理风扇运转与散热器接触；后续必要时在GPU1自然空闲后进行同负载单卡对照。降低GPU0功率上限是可选的后续缓解措施，本次没有修改硬件设置。
+
+## 2026-11-20 GPU队列对调：GPU0扁平模型无主动温度停止，GPU1混合分箱90℃保护
+
+- 用户明确要求将GPU1现有工作迁往GPU0，取消该任务主动温度保护、依赖GPU自带高温降频；GPU1改跑时间3000尾桶、IP/端口等宽基线，保留90℃停止。本次只修改新队列的脚本判断，未修改GPU驱动/固件的温度机制、硬件关断保护、风扇、功率上限或时钟。所有旧运行文件均保留，主工作区模型消融代码不改。
+
+### GPU0：扁平Transformer迁移继续
+
+- 原GPU1 flat_formal_20261120_v2通过身份核验stop 1于16:15:28停止，原lane337666/worker337677均退出。ISCX最后记录第180/1000轮，原generator.pth修改时间1795162522715111367ns晚于日志1795162522682110946ns，结合旧训练器“每轮先日志、后原子保存”及退出后文件不再变动，确认最新完整权重属于180轮；CPU typed checkpoint加载、metadata一致性、模型strict load、参数有限检查通过。旧权重和日志不覆盖。
+- 新目录名flat_migrate_gpu0_20261120_v3，ISCX复制旧第100轮编号检查点以及最新权重为resume_input.pth，逐文件记SHA-256；bins逐字节复制并核对metadata输入/分箱哈希。从181训练到1000，余下SSRC/MIRAGE/UTMN各1000轮/100保存，CESNET3为500轮/50保存，均从0开始；5项顺序不变，完整ChiMerge、flat模型、16包/128 token、batch64、expand_times0、seed20261120、原选模及最终生成保持。
+- 迁移用新冻结flat_train.py仅添加start_epoch偏移与新检查点顶层training_epoch标记，保留原损失、模型和Adam数学；run.py对迁移项复用原train/select/generate，复制的第100轮检查点与后续200..1000共同供10次选模。新generator.pth及编号检查点继续原子保存。旧检查点不含Adam/RNG，因此新建Adam并重置随机状态；本次迁移不与连续不间断训练逐步等价，此限制已告知用户。
+- 新队列温度策略：manifest.safety.temp_limit_c=null、active_temperature_stop=false；运行判断仅used>6144MiB或free<4096MiB，不含temp比较；无启动温度门槛。仍每约5秒记录温度、风扇、功耗、利用率等，继续50%分配器上限、非有限loss/异常/监控失败保护。温度本身不再触发脚本停止；没有禁用GPU自身降频或固件保护。
+- 16:18:42已后台启动，lane PID/PGID/SID348429，worker348439。确认日志从181/1000开始，第一轮迁移训练约6.51秒，NLL有限；初始外部快照约2071MiB/70℃。此为启动证据，非训练完成证据。
+- 输出路径：bins/flat_migrate_gpu0_20261120_v3/bins_[数据集].json、model/flat_migrate_gpu0_20261120_v3/[数据集]/、result/flat_migrate_gpu0_20261120_v3/[数据集]/；日志log/flat_migrate_gpu0_20261120_v3/[数据集].log及gpu0.queue.log/gpu0.status.json。CPU迁移检查脚本cpu_resume_check.py及报告记录轮次偏移、typed checkpoint往返、有限参数验证；只做一个小模型CPU batch，不增加GPU测试负载。
+
+### GPU1：3000尾桶＋IP100等宽＋端口250等宽的原版模型基线
+
+- 新目录名hybrid16_time3000_ports250_gpu1_20261120_v2。五项ISCX→SSRC→MIRAGE→UTMN→CESNET3均完整数据、从epoch0训练1000轮/每100轮checkpoint、16包、batch64、expand_times0、seed20261120、preencode=True。原版packet-state＋独立noise＋KL beta0.01；该基线的CESNET3沿用原1000/100，500/50仅属于扁平模型队列。
+- 时间[0,3000)按1秒整数区间[k,k+0.99]，尾箱[3000,10000]，共3001箱；>10000按既有编码器进入最后箱。IP在0..4294967295范围各100等宽箱；src_port/dst_port在0..65535范围各250等宽箱，沿用原equal_width边界与first-match；pkt_len/flags/ttl保持原单值编码。五份bins与GPU0旧hybrid16_time3000_ports250_20261120_v1逐字节一致并核对哈希，总箱数ISCX4785、SSRC3913、MIRAGE6488、UTMN5311、CESNET3 6623。复制的是分箱及冻结原版源码，未复用旧训练权重。
+- 源码/输入/配置哈希检查通过，复用相同源码/分箱此前5/5通过的CPU编码、边界、训练梯度、权重保存和生成预检记录；GPU映射及新目录逐项核验。启动前GPU1空闲且温度≤75℃，运行时temp>=90℃停止；50%分配器、used>6144MiB/free<4096MiB、非有限loss/监控失败保护均保留，权重原子写入并记录latest_complete_epoch.json。
+- 16:18:44已后台启动，lane PID/PGID/SID348470，worker348477。ISCX完整6781样本预编码成功，明确从0开始；已确认前3轮NLL/KL有限，首轮NLL/KL与旧GPU0同配置首轮相同（不据此声称后续跨GPU逐步等价），约2.29秒；初始外部快照约985MiB/59℃。
+- 输出路径：bins/hybrid16_time3000_ports250_gpu1_20261120_v2/bins_[数据集].json、model/hybrid16_time3000_ports250_gpu1_20261120_v2/[数据集]/、result/hybrid16_time3000_ports250_gpu1_20261120_v2/[数据集]/；日志log/hybrid16_time3000_ports250_gpu1_20261120_v2/[数据集].log及gpu1.queue.log/gpu1.status.json。
+
+### 两条新队列的监控与停止
+
+两条均独立session，脱离终端后台运行。各自thermal_telemetry.jsonl每约5秒只读记录两卡温度、风扇、利用率、功耗/上限、时钟、显存及UUID；GPU0记录但不依温度停止，GPU1仍有90℃判断。不能从当前epoch或checkpoint存在推断选模/生成完成，需检查各项status=completed及生成数量验证。
+
+```bash
+# GPU0：扁平模型迁移队列
+/data/xiaozj/anaconda3/envs/exp/bin/python log/flat_migrate_gpu0_20261120_v3/run.py status
+tail -f log/flat_migrate_gpu0_20261120_v3/gpu0.queue.log log/flat_migrate_gpu0_20261120_v3/iscx.log
+tail -f log/flat_migrate_gpu0_20261120_v3/thermal_telemetry.jsonl
+# 身份核验后仅停止此GPU0队列
+/data/xiaozj/anaconda3/envs/exp/bin/python log/flat_migrate_gpu0_20261120_v3/run.py stop 0
+
+# GPU1：混合分箱基线
+/data/xiaozj/anaconda3/envs/exp/bin/python log/hybrid16_time3000_ports250_gpu1_20261120_v2/run.py status
+tail -f log/hybrid16_time3000_ports250_gpu1_20261120_v2/gpu1.queue.log log/hybrid16_time3000_ports250_gpu1_20261120_v2/iscx.log
+tail -f log/hybrid16_time3000_ports250_gpu1_20261120_v2/thermal_telemetry.jsonl
+# 身份核验后仅停止此GPU1队列
+/data/xiaozj/anaconda3/envs/exp/bin/python log/hybrid16_time3000_ports250_gpu1_20261120_v2/run.py stop 1
+nvidia-smi
+```
+
+后续按active字段替换当前数据集日志名；不要重复launch同一目录，不使用泛化pkill。新队列manifest记录输入、源码、配置、迁移权重和runner哈希，旧历史85/90℃记录不改写。
+
+## 2026-11-20 GPU1追加完整ChiMerge＋原版模型32/64包队列（仅等待，未开始训练）
+
+- 用户要求在GPU1追加32/64包训练且不影响当前任务。结合先前明确指定的长度实验范围，本次使用ISCX、SSRC、MIRAGE、UTMN四个完整数据集，各32与64包，共8项，不加入CESNET3。将“当前任务开始后进行”按不争用GPU的约束接为当前GPU1五数据集hybrid16_time3000_ports250_gpu1_20261120_v2全部成功完成后执行；不是立即并行，也不是只等当前ISCX结束。
+- 新运行chimerge_length32_64_gpu1_20261120_v1。固定顺序：iscx_l32→ssrc_l32→mirage_l32→utmn_l32→iscx_l64→ssrc_l64→mirage_l64→utmn_l64，均在物理GPU1串行。每项完整原始data-json/[数据集]，保留所有短流并padding/mask，不筛除类别、不使用对应训练集或生成数据。max_seq_len分别32/64，batch64、1000轮、每100轮保存、expand_times0、seed20261120、preencode=True；每项从epoch0重新训练并进行原检查点选模和最终生成。
+- 使用完整原版ChiMerge（threshold_merge＋chi_merge）及原版packet-state模型，noise_heads存在、KL beta0.01、512 hidden/4层8头、state64/noise32。source从当前GPU1冻结原版复制并逐文件核对，与length_gpu_smoke_20261120_v1相应源码哈希一致。主工作区源码和两条当前任务的脚本均未修改。
+- 分别复用log/length_precheck_20261120_v2/length_32或length_64/bins已拟合的完整ChiMerge；逐字节匹配此前有界GPU测试的对应长度分箱，不复用16包箱。32/64总箱数：ISCX1637/1590，SSRC637/608，MIRAGE5110/5037，UTMN1791/1683；统计与precheck/report及8项GPU smoke均一致。完整原始输入SHA-256、类流数、截断后逐流长度、配置/分箱/源码哈希已写manifest。准备只做CPU读取和校验，不创建CUDA上下文，不额外运行GPU测试。
+- 沿用GPU1温度保护：启动前空闲且≤75℃，运行时温度≥90℃停止；分配器50%、used>6144MiB/free<4096MiB、非有限loss/监控不可用时停止。原子权重保存及latest_complete_epoch.json保留。既有8项batch64有界验证均passed，最重MIRAGE64包reserved2050MiB、整卡采样used2347MiB；并不保证长期温度或完整选模阶段峰值。
+
+### 依赖等待与核验
+
+- 独立后台等待器已于16:28:33启动，PID/PGID/SID354043，gpu1.status.json=waiting，active=null，completed=[]，原因Predecessor status=running; waiting for successful completion。目前没有case worker、正式模型或结果目录，不占用GPU。
+- 等待时只每30秒读取前序JSON状态，不调用nvidia-smi、不import torch、不创建CUDA上下文。仅当前序gpu1.status=completed、completed列表完整且顺序为5项、active=null，逐项status=completed并核对generated_counts与前序manifest全部输入数量一致，且旧lane/worker均退出后才继续核验GPU1实际空闲与资源/温度，随后启动首项。前序failed/stopped或结果未验证会保持等待，不因GPU短暂空闲抢先启动。
+- CPU依赖门测试6项通过：前序running/failed时等待且不查询GPU，部分完成阻塞，旧进程仍活着阻塞，全部成功验证且进程退出才放行，任一结果无效仍阻塞。测试报告queue_gate_test.json；无torch导入。语法、8份配置/分箱/源码哈希、独立新路径检查通过，git diff --check通过。
+- 启动后只读核实当前GPU0 lane348429/worker348439及GPU1 lane348470/worker348477未变，两项仍training；ISCX分别已到264/1000和273/1000。nvidia-smi只有原两条worker，没有新等待器的CUDA进程；当前两份run.py哈希仍与各自manifest一致。
+
+### 独立输出及监控停止
+
+- bins/chimerge_length32_64_gpu1_20261120_v1/length_[32或64]/bins_[数据集].json
+- model/chimerge_length32_64_gpu1_20261120_v1/length_[32或64]/[数据集]/
+- result/chimerge_length32_64_gpu1_20261120_v1/length_[32或64]/[数据集]/
+- log/chimerge_length32_64_gpu1_20261120_v1/[数据集]_l[32或64].log及对应config/status；队列gpu1.queue.log/gpu1.status.json。不同长度、不同数据集和既有全部运行互相隔离，不覆盖旧文件。正式训练日志在对应case开始后才创建。
+
+```bash
+# 查看等待原因/当前case及整体进度
+/data/xiaozj/anaconda3/envs/exp/bin/python log/chimerge_length32_64_gpu1_20261120_v1/run.py status
+cat log/chimerge_length32_64_gpu1_20261120_v1/gpu1.status.json
+tail -f log/chimerge_length32_64_gpu1_20261120_v1/gpu1.queue.log
+# 等对应训练开始后，按active替换日志名
+tail -f log/chimerge_length32_64_gpu1_20261120_v1/iscx_l32.log
+# 仅取消本追加队列；若仍等待则只停等待器，不影响当前GPU1任务
+/data/xiaozj/anaconda3/envs/exp/bin/python log/chimerge_length32_64_gpu1_20261120_v1/run.py stop 1
+```
+
+停止入口核验本队列脚本、PID启动标识及PGID，只向本lane发信号并由其停止自己的worker，不停止前序依赖或GPU0任务。不要重复launch同一目录。
+
+
+## 2026-11-22 GPU1 test扩展 beta=0.05：旧队列停止，新任务准备后按用户要求停止等待
+
+- 用户要求中断GPU1旧实验，以ISCX、SSRC、UTMN、MIRAGE、CESNET的test数据训练，expand_times分别0、1、2、3、4；补充明确beta=0.05。随后用户明确要求“停止等待进程，直至要求开始”，本节最终状态以该指令为准：已停止，禁止自动继续。
+- 旧队列chimerge_length32_64_gpu1_20261120_v1通过其身份校验stop入口停止，lane354043和worker494218均已退出。前6项完成保留，mirage_l64训练中断，latest_complete_epoch.json为649/1000；utmn_l64未开始。已有数据、日志、分箱及权重不删除不覆盖。
+- 新命名空间：/home/xiaozj/cgan/log/test_beta0_05_gpu1_20261122_v1/。输入依次为data-json/iscx_test、ssrc_test、utmn-test、mirage-test、cesnet3-test；逐类SHA256均与/home/xiaozj/experiment/real_data_test对应数据集一致。输入流数依次1417、1484、1010、6795、42000，类别10、9、17、20、21。cesnet-test是另一份8400流版本，本次未选择。
+- 五项拟采用正式packet-state/noise模型、完整ChiMerge、16包、batch64、1000轮、每100轮checkpoint、preencode=True、seed20261122。每个数据集只训练并选模一次，随后分别独立采样5份输出。expand_times=0..4在现有代码中对应1..5倍输入流数，共25份合成集，合计790590条流，均不混入原始记录。
+- 当前主工作区model_train.py为无KL消融版本；本次冻结旧GPU1原版源码到新source目录，核验旧manifest哈希，仅在新副本将beta = 0.01改为beta = 0.05，保持g_loss = nll_loss + beta * kl_loss。未修改cgan主工作区任何Python源码。新配置、输入软链接和源码哈希均已准备，静态语法、5份配置、训练器仅beta差异检查通过。
+- 新增辅助代码位于/home/xiaozj/experiment/code/prepare_test_beta005.py、smoke_test_beta005.py、cgan_beta005_wait.py；运行控制器及检查脚本另冻结到新运行目录的run.py、smoke.py、background.py。
+- 首次GPU小批量检查在创建CUDA上下文时即失败：CUDA unknown error，未执行任何训练batch。显式GPU1 UUID探测也失败。nvidia-smi -i 1仍可查询GPU1，但GPU0报0000:01:00.0 Unknown Error。未重置GPU、重启服务器或修改驱动、风扇、功率设置，未断言故障因果关系。
+- 曾于18:51:20启动独立后台等待器PID/PGID/SID523845，状态waiting_cuda，每60秒只做可用性探测，计划CUDA恢复后先做五项小批量检查再串行正式任务；保留原GPU1 90℃、显存及监控异常停止约束。用户最新要求后，通过background.py stop核验PID启动标识、命令及PGID并终止。最终background.status.json=stopped，signal15；无gpu1.status.json、smoke.json或本次model目录，表明正式训练与生成均未开始。
+- 预估：历史相同test输入beta0.01五项训练、选模和5次生成共约6.1小时，其中ISCX约10分钟、SSRC约11分钟、UTMN约10分钟、MIRAGE约54分钟、CESNET约4.7小时。本次beta0.05尚无有效GPU计时，保守估计可用GPU上的执行时间6–8小时；当前已停止，不提供完成时刻，需用户明确要求后才重新开始。
+- 将来预留的新输出目录为/home/xiaozj/cgan/{bins,model,result}/test_beta0_05_gpu1_20261122_v1/，result下为expand_0..expand_4/[dataset]_beta0_05。当前仅准备日志、配置及源码，未产生正式合成数据。旧结果全部保留。
+
+只读状态检查（不启动任务）：
+```bash
+/data/xiaozj/anaconda3/envs/exp/bin/python /home/xiaozj/cgan/log/test_beta0_05_gpu1_20261122_v1/background.py status
+cat /home/xiaozj/cgan/log/test_beta0_05_gpu1_20261122_v1/background.status.json
+```
+
+本次停止入口（已执行）：
+```bash
+/data/xiaozj/anaconda3/envs/exp/bin/python /home/xiaozj/cgan/log/test_beta0_05_gpu1_20261122_v1/background.py stop
+```
+
+此运行目录已有stopped状态，禁止直接重复launch覆盖；后续用户授权启动时须重新核验GPU/CUDA及配置，并采用保留旧状态的新控制记录或新目录。
