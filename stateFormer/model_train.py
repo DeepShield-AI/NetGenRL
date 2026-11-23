@@ -34,7 +34,7 @@ def transformer_train(generator, dataloader, epochs, device, model_path, checkpo
     # train generator
     gen_optimizer = optim.Adam(generator.parameters(),lr=0.0001, betas=(0.5, 0.999))
     x_list = generator.x_list
-    beta = 0.01 
+    beta = 0.05
     
     for epoch in range(start_epoch, epochs):
         start = time.perf_counter()

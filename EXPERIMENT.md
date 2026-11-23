@@ -1194,3 +1194,54 @@ kill -TERM -- -232246 -232247
 ```
 
 - 仍在state-for-codex，用户已有代码/笔记本修改保留，未commit或push。
+
+
+## 2026-11-23：beta=0.05，GPU1串行测试集训练与五档生成
+
+- 启动时间：2026-11-23 12:06:18（Asia/Shanghai）。当前分支state-for-codex。
+- 顺序：`iscx_test → ssrc_test → mirage-test → utmn-test → cesnet3-test`，均在物理GPU1串行运行；每项完成训练、选模、五档生成及校验后再启动下一项。
+- 参数：beta=0.05（已核对用户当前代码），1000 epoch、batch_size=64、checkpoint=100、max_seq_len=16、preencode=True。使用加速后的正式Transformer及当前ChiMerge；每项从epoch0训练，不加载旧模型。
+- 每个数据集只训练一次，沿用现有方式选择最佳checkpoint，然后分别独立采样expand_times=0、1、2、3、4；现有代码语义对应原数据类别样本数的1、2、3、4、5倍，总计25套合成数据、790590条flow。输出不是五次训练或复制同一份结果。
+- 独立命名空间：`test_beta0_05_20261123_v1`；输入使用只读来源的路径链接，不修改原始JSON。配置及14个当前源码文件冻结于日志目录，SHA256记录在manifest中，已核验与启动时工作区一致。后续用户代码改动不会影响本队列。
+- 全新输出路径（alias为`[数据集]_0_05`）：
+  - 分箱：`bins/test_beta0_05_20261123_v1/[alias]/bins_[alias].json`
+  - 模型：`model/test_beta0_05_20261123_v1/[alias]/`
+  - 结果：`result/test_beta0_05_20261123_v1/expand_[0..4]/[alias]/`
+  - 过程日志：`log/[数据集]_20261123_v1.log`
+  - 队列、配置、源码、状态：`log/test_beta0_05_20261123_v1/`
+- 路径独占创建；已有同名路径即拒绝启动，不覆盖旧分箱、模型、日志或结果。此前实验保留。
+
+耗时包括分箱、1000轮训练、选模及全部五档生成。参考2026-11-16同数据集、同加速方式的已完成实验实测；beta不同通常不改变计算量，但系统负载、写盘与GPU频率会引入波动。前四项参考GPU0 RTX3080，本轮迁至同型号GPU1，因此估计留有余量。
+
+| 数据集 | 输入flow数 | 上轮完整实测 | 本轮预计耗时 |
+|---|---:|---:|---:|
+| iscx_test | 1417 | 9.62分钟 | 9～12分钟 |
+| ssrc_test | 1484 | 10.45分钟 | 10～13分钟 |
+| mirage-test | 6795 | 53.44分钟 | 48～65分钟 |
+| utmn-test | 1010 | 9.49分钟 | 9～12分钟 |
+| cesnet3-test | 42000 | 4小时43分钟 | 4.3～5.2小时 |
+
+五项串行总耗时：上轮实测相加约6小时6分钟，本轮预计约5.5～7小时，即2026-11-23约17:36～19:06完成。该时间为估算，不能作为完成凭据。每项完成时将验证10个编号checkpoint、1000条epoch日志、有限loss及各类生成JSON数量/长度/数值，成功后状态才标记completed；失败时停止队列。
+
+后台启动：setsid独立会话，队列PID/PGID/SID=9731，首项worker PID=9733。已核实父进程为PID1，worker实际占用GPU1，首项日志显示从epoch0开始、preencode=True。预计新增空间约5～6GiB（同结构上一轮约5.0GiB），启动时可用72GiB。
+
+监测：
+
+```bash
+cat log/test_beta0_05_20261123_v1/gpu1.status.json
+tail -f log/test_beta0_05_20261123_v1/gpu1.queue.log
+tail -f log/iscx_test_20261123_v1.log
+# 后续将文件名替换为当前active数据集
+cat log/test_beta0_05_20261123_v1/iscx_test.status.json
+# 每个数据集完成生成的各档统计
+cat log/test_beta0_05_20261123_v1/iscx_test.synthetic_summary.json
+nvidia-smi
+```
+
+停止指令（先核实PID、PGID和命令确实属于本队列，避免PID复用；此操作停止运行，不代表额外保存可精确续训的优化器/RNG）：
+
+```bash
+ps -p 9731 -o pid,ppid,pgid,sid,etime,args
+# 核实命令含test_beta0_05_20261123_v1/run.py lane 1后执行：
+kill -TERM -- -9731
+```
